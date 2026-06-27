@@ -99,7 +99,7 @@ final class AgentClient
 
         $attempts = 0;
 
-        do {
+        while (true) {
             $attempts++;
 
             try {
@@ -130,7 +130,7 @@ final class AgentClient
             }
 
             return;
-        } while ($attempts < 3);
+        }
     }
 
     private function client(): ClientInterface

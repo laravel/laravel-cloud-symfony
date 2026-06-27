@@ -113,11 +113,7 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
         // equivalent); without one the message goes to the default queue.
         $stamp = $envelope->last(CloudQueueStamp::class);
         $queue = $stamp instanceof CloudQueueStamp ? $stamp->queue : $this->config->queue;
-        $queueUrl = $this->config->queueUrlFor($queue);
-
-        if ($queueUrl === null) {
-            throw new TransportException('No Laravel Cloud managed queue is configured (LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG is missing).');
-        }
+        $queueUrl = $this->requireQueueUrl($this->config->queueUrlFor($queue));
 
         $args = [
             'QueueUrl' => $queueUrl,
@@ -131,7 +127,7 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
         $fifo = $envelope->last(CloudFifoStamp::class);
         $group = $envelope->last(CloudMessageGroupStamp::class);
 
-        if (str_ends_with($queue, '.fifo')) {
+        if (ManagedQueueConfig::isFifo($queue)) {
             // On a FIFO queue the message group is an ordering scope set via
             // CloudFifoStamp. CloudMessageGroupStamp is the standard-queue (fair
             // queues) tool, so it has no meaning here — reject it rather than
@@ -187,11 +183,7 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
             }
         }
 
-        try {
-            $result = $this->sqs->sendMessage($args);
-        } catch (\Throwable $e) {
-            throw new TransportException($e->getMessage(), 0, $e);
-        }
+        $result = $this->withSqs(fn () => $this->sqs->sendMessage($args));
 
         return $envelope->with(new TransportMessageIdStamp($result->get('MessageId')));
     }
@@ -218,23 +210,21 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
             return;
         }
 
-        try {
-            $this->sqs->changeMessageVisibility([
-                'QueueUrl' => $stamp->queueUrl,
-                'ReceiptHandle' => $stamp->receiptHandle,
-                'VisibilityTimeout' => $delaySeconds,
-            ]);
-        } catch (\Throwable $e) {
-            throw new TransportException($e->getMessage(), 0, $e);
-        }
+        $this->withSqs(fn () => $this->sqs->changeMessageVisibility([
+            'QueueUrl' => $stamp->queueUrl,
+            'ReceiptHandle' => $stamp->receiptHandle,
+            'VisibilityTimeout' => $delaySeconds,
+        ]));
     }
 
     public function getMessageCount(): int
     {
-        $result = $this->sqs->getQueueAttributes([
-            'QueueUrl' => $this->config->queueUrl,
+        $queueUrl = $this->requireQueueUrl($this->config->queueUrl);
+
+        $result = $this->withSqs(fn () => $this->sqs->getQueueAttributes([
+            'QueueUrl' => $queueUrl,
             'AttributeNames' => ['ApproximateNumberOfMessages'],
-        ]);
+        ]));
 
         return (int) ($result->get('Attributes')['ApproximateNumberOfMessages'] ?? 0);
     }
@@ -246,7 +236,7 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
     {
         $data = $this->agent->next();
 
-        if (! (is_array($data) && is_string($messageId = $data['messageId'] ?? null) && $messageId !== '')) {
+        if (! (is_string($messageId = $data['messageId'] ?? null) && $messageId !== '')) {
             return [];
         }
 
@@ -267,24 +257,16 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
      */
     private function getFromSqs(?string $queueUrl = null): iterable
     {
-        $queueUrl ??= $this->config->queueUrl;
+        $queueUrl = $this->requireQueueUrl($queueUrl ?? $this->config->queueUrl);
 
-        if ($queueUrl === null) {
-            throw new TransportException('No Laravel Cloud managed queue is configured (LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG is missing).');
-        }
-
-        try {
-            $result = $this->sqs->receiveMessage([
-                'QueueUrl' => $queueUrl,
-                'MaxNumberOfMessages' => 1,
-                'WaitTimeSeconds' => 20,
-                'MessageAttributeNames' => ['All'],
-                // ApproximateReceiveCount is the attempt counter for retries.
-                'AttributeNames' => ['ApproximateReceiveCount'],
-            ]);
-        } catch (\Throwable $e) {
-            throw new TransportException($e->getMessage(), 0, $e);
-        }
+        $result = $this->withSqs(fn () => $this->sqs->receiveMessage([
+            'QueueUrl' => $queueUrl,
+            'MaxNumberOfMessages' => 1,
+            'WaitTimeSeconds' => 20,
+            'MessageAttributeNames' => ['All'],
+            // ApproximateReceiveCount is the attempt counter for retries.
+            'AttributeNames' => ['ApproximateReceiveCount'],
+        ]));
 
         $message = $result->get('Messages')[0] ?? null;
 
@@ -380,11 +362,40 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
             return;
         }
 
+        $this->withSqs(fn () => $this->sqs->deleteMessage([
+            'QueueUrl' => $stamp->queueUrl,
+            'ReceiptHandle' => $stamp->receiptHandle,
+        ]));
+    }
+
+    /**
+     * Resolve a queue URL, or fail with one actionable message everywhere a
+     * managed queue is required but none is configured (running locally with no
+     * LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG).
+     */
+    private function requireQueueUrl(?string $queueUrl): string
+    {
+        if ($queueUrl === null) {
+            throw new TransportException('No Laravel Cloud managed queue is configured (LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG is missing).');
+        }
+
+        return $queueUrl;
+    }
+
+    /**
+     * Run an SQS call, translating any AWS/SDK failure into a Messenger
+     * TransportException so every SQS touchpoint surfaces faults identically.
+     *
+     * @template T
+     *
+     * @param callable(): T $operation
+     *
+     * @return T
+     */
+    private function withSqs(callable $operation): mixed
+    {
         try {
-            $this->sqs->deleteMessage([
-                'QueueUrl' => $stamp->queueUrl,
-                'ReceiptHandle' => $stamp->receiptHandle,
-            ]);
+            return $operation();
         } catch (\Throwable $e) {
             throw new TransportException($e->getMessage(), 0, $e);
         }

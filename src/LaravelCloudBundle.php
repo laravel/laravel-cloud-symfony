@@ -66,9 +66,7 @@ class LaravelCloudBundle extends AbstractBundle
                 continue;
             }
 
-            // Mirror loadExtension's enabled rule: a feature is on unless its
-            // own config slice explicitly turned it off.
-            if (($config[$feature->name()]['enabled'] ?? true) === false) {
+            if (! $this->isFeatureEnabled($feature, $config)) {
                 continue;
             }
 
@@ -83,9 +81,7 @@ class LaravelCloudBundle extends AbstractBundle
         foreach ($this->features() as $feature) {
             $featureConfig = $config[$feature->name()] ?? [];
 
-            // A feature is enabled unless it exposed an `enabled` flag and turned
-            // it off (canBeDisabled/canBeEnabled set this key).
-            if (($featureConfig['enabled'] ?? true) === false) {
+            if (! $this->isFeatureEnabled($feature, $config)) {
                 continue;
             }
 
@@ -120,6 +116,19 @@ class LaravelCloudBundle extends AbstractBundle
             ->args(['%laravel_cloud.log_socket%']);
 
         return new PlatformContext('laravel_cloud.agent_socket', 'laravel_cloud.log_socket');
+    }
+
+    /**
+     * Whether a feature is enabled: on unless its own config slice explicitly
+     * set `enabled: false` (canBeDisabled/canBeEnabled writes that key). Shared
+     * by the prepend and load passes so the two never drift on what "enabled"
+     * means.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private function isFeatureEnabled(CloudFeature $feature, array $config): bool
+    {
+        return ($config[$feature->name()]['enabled'] ?? true) !== false;
     }
 
     /**

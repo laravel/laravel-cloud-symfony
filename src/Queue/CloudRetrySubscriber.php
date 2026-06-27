@@ -111,12 +111,19 @@ final class CloudRetrySubscriber implements EventSubscriberInterface
      */
     private function backoffSeconds(int $attempts): int
     {
-        $delayMs = (int) round($this->baseDelay * $this->multiplier ** ($attempts - 1));
+        $delayMs = (float) $this->baseDelay * $this->multiplier ** ($attempts - 1);
 
         if ($this->maxDelay > 0) {
-            $delayMs = min($delayMs, $this->maxDelay);
+            $delayMs = min($delayMs, (float) $this->maxDelay);
         }
 
-        return max(0, min(43200, intdiv($delayMs, 1000)));
+        // SQS caps a visibility timeout at 12 hours. Clamp in milliseconds while
+        // still a float, *before* the int cast: an unbounded max_attempts with a
+        // multiplier > 1 overflows the exponentiation to INF, and (int) INF is 0
+        // — which would collapse the backoff to an immediate 0-second redelivery
+        // loop. min() against the finite ceiling tames INF first.
+        $delayMs = min($delayMs, 43200.0 * 1000);
+
+        return max(0, intdiv((int) round($delayMs), 1000));
     }
 }

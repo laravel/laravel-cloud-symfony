@@ -16,7 +16,6 @@ use Symfony\Component\Messenger\Event\SendMessageToTransportsEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageHandledEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageReceivedEvent;
-use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 
 /**
@@ -168,7 +167,9 @@ class QueueEventSubscriberTest extends TestCase
     {
         $subscriber = $this->subscriber();
 
-        $received = new WorkerMessageReceivedEvent($this->managedEnvelope(), 'cloud');
+        // Failed on its 3rd SQS delivery: the failed_job attempt count comes from
+        // ApproximateReceiveCount (no RedeliveryStamp exists under SQS-native retry).
+        $received = new WorkerMessageReceivedEvent($this->managedEnvelope(receiveCount: 3), 'cloud');
 
         $lines = $this->capture(function () use ($subscriber, $received) {
             $subscriber->onReceived($received);
@@ -190,7 +191,7 @@ class QueueEventSubscriberTest extends TestCase
 
         $this->assertSame('failed_job', $lines[2]['_cloud_event']);
         $this->assertSame('default', $lines[2]['queue']);
-        $this->assertSame(1, $lines[2]['attempts']);
+        $this->assertSame(3, $lines[2]['attempts']);
         $this->assertSame('raw-body', $lines[2]['payload']);
         $this->assertStringContainsString('boom', $lines[2]['exception']);
         $this->assertNotEmpty($lines[2]['id']);
@@ -201,13 +202,13 @@ class QueueEventSubscriberTest extends TestCase
     {
         $subscriber = $this->subscriber();
 
-        $envelope = $this->managedEnvelope()->with(new RedeliveryStamp(1));
-        $received = new WorkerMessageReceivedEvent($envelope, 'cloud');
+        $received = new WorkerMessageReceivedEvent($this->managedEnvelope(), 'cloud');
 
         $lines = $this->capture(function () use ($subscriber, $received) {
             $subscriber->onReceived($received);
 
             $failed = new WorkerMessageFailedEvent($received->getEnvelope(), 'cloud', new \RuntimeException('again'));
+            // CloudRetrySubscriber would set this; here we drive it directly.
             $failed->setForRetry();
             $subscriber->onFailed($failed);
         });
@@ -231,10 +232,10 @@ class QueueEventSubscriberTest extends TestCase
         return new QueueEventSubscriber(new Events('unix://'.$this->socketPath), $this->config());
     }
 
-    private function managedEnvelope(): Envelope
+    private function managedEnvelope(int $receiveCount = 1): Envelope
     {
         return (new Envelope(new DummyMessage('work')))
-            ->with(new CloudQueueReceivedStamp('m-1', 'rh-1', self::QUEUE_URL, fromAgent: true, body: 'raw-body'));
+            ->with(new CloudQueueReceivedStamp('m-1', 'rh-1', self::QUEUE_URL, fromAgent: true, body: 'raw-body', approximateReceiveCount: $receiveCount));
     }
 
     private function config(): ManagedQueueConfig

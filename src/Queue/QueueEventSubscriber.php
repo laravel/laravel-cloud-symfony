@@ -13,7 +13,6 @@ use Symfony\Component\Messenger\Event\SendMessageToTransportsEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageHandledEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageReceivedEvent;
-use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -69,10 +68,13 @@ final class QueueEventSubscriber implements EventSubscriberInterface
     private const MAX_EXCEPTION_BYTES = 4000;
     private const MAX_PAYLOAD_BODY_BYTES = 2000;
 
+    private readonly \DateTimeZone $utc;
+
     public function __construct(
         private readonly Events $events,
         private readonly ManagedQueueConfig $config,
     ) {
+        $this->utc = new \DateTimeZone('UTC');
     }
 
     public static function getSubscribedEvents(): array
@@ -97,12 +99,11 @@ final class QueueEventSubscriber implements EventSubscriberInterface
                 // message actually lands on, not the container's default.
                 $stamp = $event->getEnvelope()->last(CloudQueueStamp::class);
 
-                $this->events->emit([
-                    '_cloud_event' => 'queue',
-                    'timestamp' => $this->now()->format('Y-m-d H:i:s.u'),
-                    'type' => 'queued',
-                    'queue' => $stamp instanceof CloudQueueStamp ? $stamp->queue : $this->config->queue,
-                ]);
+                $this->emitQueueEvent(
+                    'queued',
+                    $stamp instanceof CloudQueueStamp ? $stamp->queue : $this->config->queue,
+                    $this->now(),
+                );
 
                 return;
             }
@@ -121,12 +122,7 @@ final class QueueEventSubscriber implements EventSubscriberInterface
         // event can report an accurate duration.
         $event->addStamps(new CloudProcessingStartedStamp($startedAt));
 
-        $this->events->emit([
-            '_cloud_event' => 'queue',
-            'timestamp' => $startedAt->format('Y-m-d H:i:s.u'),
-            'type' => 'started',
-            'queue' => $this->queue($event->getEnvelope()),
-        ]);
+        $this->emitQueueEvent('started', $this->queue($event->getEnvelope()), $startedAt);
     }
 
     public function onHandled(WorkerMessageHandledEvent $event): void
@@ -139,11 +135,7 @@ final class QueueEventSubscriber implements EventSubscriberInterface
 
         $finishedAt = $this->now();
 
-        $this->events->emit([
-            '_cloud_event' => 'queue',
-            'timestamp' => $finishedAt->format('Y-m-d H:i:s.u'),
-            'type' => 'processed',
-            'queue' => $this->queue($envelope),
+        $this->emitQueueEvent('processed', $this->queue($envelope), $finishedAt, [
             'duration_ms' => $this->durationMs($envelope, $finishedAt),
         ]);
     }
@@ -160,11 +152,7 @@ final class QueueEventSubscriber implements EventSubscriberInterface
         $queue = $this->queue($envelope);
         $willRetry = $event->willRetry();
 
-        $this->events->emit([
-            '_cloud_event' => 'queue',
-            'timestamp' => $finishedAt->format('Y-m-d H:i:s.u'),
-            'type' => $willRetry ? 'released' : 'failed',
-            'queue' => $queue,
+        $this->emitQueueEvent($willRetry ? 'released' : 'failed', $queue, $finishedAt, [
             'duration_ms' => $this->durationMs($envelope, $finishedAt),
         ]);
 
@@ -188,7 +176,12 @@ final class QueueEventSubscriber implements EventSubscriberInterface
             'id' => (string) Uuid::v7(),
             'queue' => $queue,
             'started_at' => $startedAt->format('Y-m-d H:i:s.u'),
-            'attempts' => RedeliveryStamp::getRetryCountFromEnvelope($envelope) + 1,
+            // The attempt count is SQS's ApproximateReceiveCount (mirroring
+            // Laravel's SqsJob::attempts()), threaded onto the received stamp.
+            // This transport disables Messenger's re-send retry and releases via
+            // SQS-native redelivery, so no RedeliveryStamp is ever attached —
+            // reading one here would always report 1.
+            'attempts' => $received?->approximateReceiveCount ?? 1,
             'payload' => $this->trimPayload($received?->body ?? ''),
             'exception' => $this->truncate($exception, self::MAX_EXCEPTION_BYTES),
         ]);
@@ -241,6 +234,25 @@ final class QueueEventSubscriber implements EventSubscriberInterface
         return mb_strcut($value, 0, $maxBytes, 'UTF-8').$marker;
     }
 
+    /**
+     * Emit one queue-lifecycle event in Laravel Cloud's wire shape. The
+     * "_cloud_event"/"queue" channel and the "Y-m-d H:i:s.u" timestamp format
+     * are the dashboard's contract, so every lifecycle emit funnels through here
+     * to keep them in lockstep.
+     *
+     * @param array<string, mixed> $extra
+     */
+    private function emitQueueEvent(string $type, string $queue, \DateTimeImmutable $at, array $extra = []): void
+    {
+        $this->events->emit([
+            '_cloud_event' => 'queue',
+            'timestamp' => $at->format('Y-m-d H:i:s.u'),
+            'type' => $type,
+            'queue' => $queue,
+            ...$extra,
+        ]);
+    }
+
     private function isManaged(Envelope $envelope): bool
     {
         return $envelope->last(CloudQueueReceivedStamp::class) !== null;
@@ -273,6 +285,6 @@ final class QueueEventSubscriber implements EventSubscriberInterface
 
     private function now(): \DateTimeImmutable
     {
-        return new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        return new \DateTimeImmutable('now', $this->utc);
     }
 }

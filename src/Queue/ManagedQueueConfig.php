@@ -70,6 +70,17 @@ final class ManagedQueueConfig
     }
 
     /**
+     * Whether a logical queue name denotes a FIFO queue. The ".fifo" suffix is
+     * the single marker SQS (and Laravel) use, so every FIFO branch — here, in
+     * URL building/normalizing, and in the transport's send() — routes through
+     * this one predicate rather than re-testing the suffix inline.
+     */
+    public static function isFifo(string $queue): bool
+    {
+        return str_ends_with($queue, '.fifo');
+    }
+
+    /**
      * Build the full SQS queue URL for a logical managed-queue name. This is how a
      * named queue (e.g. "critical") is resolved on both the dispatch path (the
      * CloudQueueStamp target) and the receive path
@@ -100,7 +111,7 @@ final class ManagedQueueConfig
             return null;
         }
 
-        if (str_ends_with($queue, '.fifo')) {
+        if (self::isFifo($queue)) {
             $base = substr($queue, 0, -strlen('.fifo'));
 
             return sprintf('%s/%s%s.fifo', $prefix, $base, $suffix);
@@ -127,7 +138,7 @@ final class ManagedQueueConfig
         }
 
         if ($this->suffix !== '') {
-            if (str_ends_with($queue, '.fifo')) {
+            if (self::isFifo($queue)) {
                 $base = substr($queue, 0, -strlen('.fifo'));
 
                 if (str_ends_with($base, $this->suffix)) {
