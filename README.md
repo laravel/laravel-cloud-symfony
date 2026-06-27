@@ -53,11 +53,15 @@ show up in the Laravel Cloud dashboard automatically.
 
 A Laravel Cloud environment can have several managed queues (for example
 `default` and `critical`), each backed by its own SQS queue and its own isolated
-workers. Reference a queue by its **name** — the transport assembles the full SQS
-URL from the prefix and suffix Cloud injects — on both sides:
+workers. You keep the single `cloud` transport and reference a queue by its
+**name** on both sides — the transport assembles the full SQS URL from the prefix
+and suffix Cloud injects. This mirrors how Laravel uses one connection with
+`->onQueue()` and `--queue=`, rather than Symfony's usual one-transport-per-queue
+convention.
 
 **Dispatching** to a specific queue uses `CloudQueueStamp`, the equivalent of
-Laravel's `->onQueue('critical')`:
+Laravel's `->onQueue('critical')`. It's the same pattern as Symfony's own
+`AmqpStamp` — a transport-specific stamp that picks the destination per message:
 
 ```php
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueStamp;
@@ -77,9 +81,16 @@ equivalent of Laravel's `queue:work --queue=critical`:
 php bin/console messenger:consume cloud --queues=critical
 ```
 
-On Laravel Cloud this is wired up for you: each managed queue gets its own
-isolated workers running this command for its own queue. The worker only ever
-processes the queue it was assigned.
+On Laravel Cloud workers are isolated — each managed queue gets its own workers,
+and a worker only ever processes the single queue it was assigned. Cloud wires up
+this command with the right queue name for you, so `--queues` is really just how a
+worker selects its one queue (locally, it's how you point a dev worker at a
+specific queue).
+
+Queue attribution flows through to the Laravel Cloud dashboard end to end: the
+enqueue, processing and failure metrics are all recorded against the named queue,
+so a `CloudQueueStamp('critical')` dispatch shows up under `critical` on both the
+dispatch and the processing side.
 
 For local development where you'd rather process jobs inline without SQS,
 declare your own transport and route to it instead — the `cloud` transport is

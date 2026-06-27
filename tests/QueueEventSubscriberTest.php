@@ -6,6 +6,7 @@ use Aws\Sqs\SqsClient;
 use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
 use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueReceivedStamp;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransport;
 use Laravel\Cloud\Symfony\Observability\Events;
 use Laravel\Cloud\Symfony\Queue\QueueEventSubscriber;
@@ -69,6 +70,24 @@ class QueueEventSubscriberTest extends TestCase
         $this->assertSame('queued', $lines[0]['type']);
         $this->assertSame('default', $lines[0]['queue']);
         $this->assertNotEmpty($lines[0]['timestamp']);
+    }
+
+    public function testTheQueuedEventReportsTheStampedQueue(): void
+    {
+        $subscriber = $this->subscriber();
+
+        $event = new SendMessageToTransportsEvent(
+            new Envelope(new DummyMessage('hi'), [new CloudQueueStamp('critical')]),
+            ['cloud' => $this->cloudTransport()],
+        );
+
+        $lines = $this->capture(fn () => $subscriber->onSend($event));
+
+        $this->assertCount(1, $lines);
+        $this->assertSame('queued', $lines[0]['type']);
+        // The CloudQueueStamp wins over the container's default queue, so the
+        // enqueue metric lands on the same queue send() pushes to.
+        $this->assertSame('critical', $lines[0]['queue']);
     }
 
     public function testItIgnoresSendsToOtherTransports(): void

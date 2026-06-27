@@ -5,6 +5,7 @@ namespace Laravel\Cloud\Symfony\Queue;
 use Laravel\Cloud\Symfony\Observability\Events;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudProcessingStartedStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueReceivedStamp;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransport;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\Messenger\Envelope;
@@ -90,11 +91,17 @@ final class QueueEventSubscriber implements EventSubscriberInterface
     {
         foreach ($event->getSenders() as $sender) {
             if ($sender instanceof CloudQueueTransport) {
+                // A CloudQueueStamp picks the target queue (the ->onQueue()
+                // equivalent), exactly as the transport's send() does; mirror it
+                // here so the "queued" metric is attributed to the queue the
+                // message actually lands on, not the container's default.
+                $stamp = $event->getEnvelope()->last(CloudQueueStamp::class);
+
                 $this->events->emit([
                     '_cloud_event' => 'queue',
                     'timestamp' => $this->now()->format('Y-m-d H:i:s.u'),
                     'type' => 'queued',
-                    'queue' => $this->config->queue,
+                    'queue' => $stamp instanceof CloudQueueStamp ? $stamp->queue : $this->config->queue,
                 ]);
 
                 return;
