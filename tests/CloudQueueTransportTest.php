@@ -14,6 +14,7 @@ use GuzzleHttp\Psr7\Response;
 use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
 use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudFifoStamp;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudMessageGroupStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueReceivedStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransport;
@@ -137,7 +138,38 @@ class CloudQueueTransportTest extends TestCase
         $this->expectException(TransportException::class);
 
         $transport->send((new Envelope(new DummyMessage('oops')))
-            ->with(new CloudFifoStamp(messageGroupId: 'g')));
+            ->with(new CloudFifoStamp(messageDeduplicationId: 'd')));
+    }
+
+    public function testSendToAStandardQueueSetsTheFairQueueMessageGroup(): void
+    {
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = $cmd->toArray();
+
+            return new Result(['MessageId' => 'id']);
+        });
+
+        $transport = $this->transport(useAgent: false);
+        $transport->send((new Envelope(new DummyMessage('tenant work')))
+            ->with(new CloudMessageGroupStamp('customer-7')));
+
+        $cmd = $this->sqsCommands[0];
+
+        // The group ID enables SQS fair queues as a pure tenant key...
+        $this->assertSame('customer-7', $cmd['MessageGroupId']);
+        // ...with no deduplication ID, which standard queues reject.
+        $this->assertArrayNotHasKey('MessageDeduplicationId', $cmd);
+    }
+
+    public function testACloudMessageGroupStampOnAFifoQueueIsRejected(): void
+    {
+        $transport = $this->transport(useAgent: false);
+
+        $this->expectException(TransportException::class);
+
+        $transport->send((new Envelope(new DummyMessage('oops')))
+            ->with(new CloudQueueStamp('orders.fifo'))
+            ->with(new CloudMessageGroupStamp('customer-7')));
     }
 
     public function testSendToAFifoQueueIgnoresTheDelayStamp(): void

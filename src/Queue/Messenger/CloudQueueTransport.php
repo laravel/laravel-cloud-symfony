@@ -119,8 +119,17 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
         // queue has content-based deduplication enabled), and rejects the
         // per-message delivery delay that standard queues allow.
         $fifo = $envelope->last(CloudFifoStamp::class);
+        $group = $envelope->last(CloudMessageGroupStamp::class);
 
         if (str_ends_with($queue, '.fifo')) {
+            // On a FIFO queue the message group is an ordering scope set via
+            // CloudFifoStamp. CloudMessageGroupStamp is the standard-queue (fair
+            // queues) tool, so it has no meaning here — reject it rather than
+            // quietly applying it to the wrong queue model.
+            if ($group instanceof CloudMessageGroupStamp) {
+                throw new TransportException(sprintf('A CloudMessageGroupStamp was applied to the FIFO queue "%s"; set a FIFO message group via CloudFifoStamp instead.', $queue));
+            }
+
             // Group ID defaults to the queue name (all of its messages ordered
             // together); dedup ID defaults to a unique value so messages aren't
             // dropped as duplicates. Both mirror Laravel's SqsQueue defaults and
@@ -132,6 +141,15 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
                 // FIFO attributes on a standard queue are meaningless; fail loudly
                 // rather than silently dropping them.
                 throw new TransportException(sprintf('A CloudFifoStamp was applied to the non-FIFO queue "%s"; FIFO attributes require a ".fifo" queue.', $queue));
+            }
+
+            // A message group on a standard queue enables SQS fair queues: SQS reads
+            // it purely as a tenant key (no ordering, processed in parallel) and
+            // spreads consumer capacity fairly across groups. It is never a
+            // deduplication token — that attribute is FIFO-only — so a delay can
+            // still apply alongside it.
+            if ($group instanceof CloudMessageGroupStamp) {
+                $args['MessageGroupId'] = $group->messageGroupId;
             }
 
             if (($delayStamp = $envelope->last(DelayStamp::class)) instanceof DelayStamp && $delayStamp->getDelay() > 0) {

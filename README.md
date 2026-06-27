@@ -123,6 +123,39 @@ A `CloudFifoStamp` is only valid on a `.fifo` queue; applying it to a standard
 queue throws rather than being silently ignored. FIFO queues don't support
 per-message delivery delay, so any `DelayStamp` is ignored for them.
 
+### Fair queues
+
+[SQS fair queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html)
+keep one noisy tenant from starving the others on a busy queue. On a **standard**
+queue, attaching a message group ID marks each message with the tenant it belongs
+to (a customer, client app, or request type); SQS then spreads consumer capacity
+fairly across groups when one tenant builds a backlog. Fairness is automatic and
+server-side — there's nothing to enable and no change to your consumers.
+
+Unlike FIFO, the group ID here is **only** a tenant key: messages in the same
+group still process in parallel at full throughput, and there is no ordering or
+deduplication. Attach a `CloudMessageGroupStamp` — the Symfony equivalent of
+Laravel's `$job->messageGroup()` / `->onGroup()`:
+
+```php
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudMessageGroupStamp;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueStamp;
+
+$bus->dispatch(new ProcessOrder($order), [
+    // A standard queue (no ".fifo"), so the group ID is a fair-queue tenant key.
+    new CloudQueueStamp('orders'),
+    new CloudMessageGroupStamp('customer-'.$order->customerId),
+]);
+```
+
+To attach the tenant key everywhere without repeating it at each dispatch, add a
+middleware that stamps `CloudMessageGroupStamp` from the message (the tenant on
+the job, the authenticated user, etc.).
+
+The two stamps mirror the two queue models and don't mix: `CloudMessageGroupStamp`
+is for fair queues (standard) and is rejected on a `.fifo` queue, where the group
+is an ordering scope set via `CloudFifoStamp` instead.
+
 ### Local development
 
 The `cloud` transport is just a default, so an app-defined transport of the same
