@@ -93,12 +93,10 @@ connection detail.
 | ------------------------------------- | ------------------------------------------------------------------------------- |
 | `LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG` | JSON describing the SQS connection (prefix, suffix, queue, region, credentials) |
 
-Force the receive mode with the `use_agent` transport option if auto-detection
-(socket presence) isn't desired:
-
-```yaml
-cloud: 'laravel-cloud://managed-queue?use_agent=true'
-```
+That's all the configuration there is. Whether jobs are received via the
+in-container agent (on Laravel Cloud) or polled directly from SQS (local
+development) is detected automatically, so the same DSN works everywhere with no
+extra options to set.
 
 Disable the feature entirely with `laravel_cloud.queue.enabled: false`.
 
@@ -164,60 +162,9 @@ LaravelCloudBundle            thin host: owns the shared platform primitives,
 
 The bundle never special-cases any one feature. It wires the shared primitives
 once, then loops over its features — each declaring its own `laravel_cloud.<name>`
-config and registering its own services through the `CloudFeature` contract.
-
-## Adding a feature
-
-A Laravel Cloud feature is a single class implementing
-`Laravel\Cloud\Symfony\CloudFeature`:
-
-```php
-use Laravel\Cloud\Symfony\CloudFeature;
-use Laravel\Cloud\Symfony\PlatformContext;
-use Symfony\Component\Config\Definition\Builder\NodeBuilder;
-use Symfony\Component\DependencyInjection\ContainerBuilder;
-use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
-
-final class CacheFeature implements CloudFeature
-{
-    public function name(): string
-    {
-        return 'cache'; // lives under laravel_cloud.cache
-    }
-
-    public function configure(NodeBuilder $builder): void
-    {
-        $builder->arrayNode($this->name())->canBeDisabled()->end();
-    }
-
-    public function register(array $config, ContainerConfigurator $container, ContainerBuilder $builder, PlatformContext $platform): void
-    {
-        // Build on the shared primitives without knowing their wiring:
-        //   $platform->events()       — emit dashboard metrics over the log socket
-        //   $platform->agentSocket()  — talk to the in-container agent sidecar
-        //   $platform->logSocket()    — the raw log socket address
-        $container->services()
-            ->set(MyCacheService::class)
-            ->args([$platform->events()]);
-    }
-}
-```
-
-Then list it in the bundle's feature set:
-
-```php
-protected function features(): array
-{
-    return [
-        new Queue\QueueFeature(),
-        new CacheFeature(),
-    ];
-}
-```
-
-That's the whole extension point — no other part of the bundle changes. The new
-feature gets its own config sub-tree, an `enabled` toggle, and access to every
-shared platform primitive.
+config and registering its own services through the `CloudFeature` contract. A
+new Laravel Cloud capability is added by implementing `CloudFeature` and listing
+it in `LaravelCloudBundle::features()`.
 
 ## Testing
 
