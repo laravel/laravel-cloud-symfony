@@ -18,12 +18,8 @@ use Symfony\Component\Messenger\Stamp\StampInterface;
  *
  *   $bus->dispatch(new ProcessReport($report), [new CloudQueueStamp('orders.fifo')]);
  *
- * FIFO queues require a message group ID (messages sharing a group are delivered
- * in strict order) and a deduplication ID. Both are optional here: the group ID
- * defaults to the queue name and the deduplication ID to a unique value (so
- * every message is treated as distinct unless the queue uses content-based
- * deduplication), mirroring Laravel's SqsQueue defaults. Pass them explicitly to
- * control the ordering scope or to deduplicate by a stable key.
+ * This stamp only selects the queue. A FIFO queue's ordering scope and
+ * deduplication key are a separate concern — set them with {@see CloudFifoStamp}.
  *
  * Sendable on purpose (unlike CloudQueueReceivedStamp): it travels with the
  * message so that when Messenger retries by re-sending a copy, the retry lands
@@ -33,8 +29,6 @@ final class CloudQueueStamp implements StampInterface
 {
     public function __construct(
         public readonly string $queue,
-        public readonly ?string $messageGroupId = null,
-        public readonly ?string $deduplicationId = null,
     ) {
     }
 }

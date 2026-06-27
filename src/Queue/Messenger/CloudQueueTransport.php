@@ -118,16 +118,26 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
         // requires a message group ID, requires a deduplication ID (unless the
         // queue has content-based deduplication enabled), and rejects the
         // per-message delivery delay that standard queues allow.
+        $fifo = $envelope->last(CloudFifoStamp::class);
+
         if (str_ends_with($queue, '.fifo')) {
             // Group ID defaults to the queue name (all of its messages ordered
             // together); dedup ID defaults to a unique value so messages aren't
             // dropped as duplicates. Both mirror Laravel's SqsQueue defaults and
-            // can be overridden via the CloudQueueStamp.
-            $args['MessageGroupId'] = $stamp?->messageGroupId ?? $queue;
-            $args['MessageDeduplicationId'] = $stamp?->deduplicationId ?? (string) Uuid::v7();
-        } elseif (($delayStamp = $envelope->last(DelayStamp::class)) instanceof DelayStamp && $delayStamp->getDelay() > 0) {
-            // SQS delivery delay is whole seconds, capped at 15 minutes.
-            $args['DelaySeconds'] = min(900, intdiv($delayStamp->getDelay(), 1000));
+            // can be set explicitly via a CloudFifoStamp.
+            $args['MessageGroupId'] = $fifo?->messageGroupId ?? $queue;
+            $args['MessageDeduplicationId'] = $fifo?->messageDeduplicationId ?? (string) Uuid::v7();
+        } else {
+            if ($fifo instanceof CloudFifoStamp) {
+                // FIFO attributes on a standard queue are meaningless; fail loudly
+                // rather than silently dropping them.
+                throw new TransportException(sprintf('A CloudFifoStamp was applied to the non-FIFO queue "%s"; FIFO attributes require a ".fifo" queue.', $queue));
+            }
+
+            if (($delayStamp = $envelope->last(DelayStamp::class)) instanceof DelayStamp && $delayStamp->getDelay() > 0) {
+                // SQS delivery delay is whole seconds, capped at 15 minutes.
+                $args['DelaySeconds'] = min(900, intdiv($delayStamp->getDelay(), 1000));
+            }
         }
 
         try {

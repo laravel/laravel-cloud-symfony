@@ -13,11 +13,13 @@ use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
 use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudFifoStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueReceivedStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransport;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
@@ -111,7 +113,7 @@ class CloudQueueTransportTest extends TestCase
         $this->assertNotEmpty($cmd['MessageDeduplicationId']);
     }
 
-    public function testSendToAFifoQueueHonoursExplicitGroupAndDeduplicationIds(): void
+    public function testSendToAFifoQueueHonoursAnExplicitCloudFifoStamp(): void
     {
         $this->sqsMock->append(function (CommandInterface $cmd) {
             $this->sqsCommands[] = $cmd->toArray();
@@ -121,10 +123,21 @@ class CloudQueueTransportTest extends TestCase
 
         $transport = $this->transport(useAgent: false);
         $transport->send((new Envelope(new DummyMessage('ordered')))
-            ->with(new CloudQueueStamp('orders.fifo', messageGroupId: 'customer-7', deduplicationId: 'dedup-key')));
+            ->with(new CloudQueueStamp('orders.fifo'))
+            ->with(new CloudFifoStamp(messageGroupId: 'customer-7', messageDeduplicationId: 'dedup-key')));
 
         $this->assertSame('customer-7', $this->sqsCommands[0]['MessageGroupId']);
         $this->assertSame('dedup-key', $this->sqsCommands[0]['MessageDeduplicationId']);
+    }
+
+    public function testACloudFifoStampOnAStandardQueueIsRejected(): void
+    {
+        $transport = $this->transport(useAgent: false);
+
+        $this->expectException(TransportException::class);
+
+        $transport->send((new Envelope(new DummyMessage('oops')))
+            ->with(new CloudFifoStamp(messageGroupId: 'g')));
     }
 
     public function testSendToAFifoQueueIgnoresTheDelayStamp(): void
