@@ -2,7 +2,7 @@
 
 namespace Laravel\Cloud\Symfony\Tests;
 
-use Laravel\Cloud\Symfony\Agent\AgentClient;
+use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Process\Process;
 

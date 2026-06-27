@@ -1,10 +1,10 @@
 <?php
 
-namespace Laravel\Cloud\Symfony\Sqs;
+namespace Laravel\Cloud\Symfony\Queue\Sqs;
 
 use Aws\Credentials\CredentialProvider;
 use Aws\Sqs\SqsClient;
-use Laravel\Cloud\Symfony\ManagedQueueConfig;
+use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
 
 /**
  * Builds the SQS client used to push jobs (and, when running locally without

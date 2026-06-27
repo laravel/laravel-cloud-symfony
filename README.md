@@ -1,18 +1,19 @@
 # laravel/symfony-on-cloud
 
-Run [Laravel Cloud Managed Queues](https://laravel.com/cloud) from a Symfony
-application, on top of [Symfony Messenger](https://symfony.com/doc/current/messenger.html).
+Bring [Laravel Cloud](https://laravel.com/cloud) features to a [Symfony](https://symfony.com)
+application.
 
-Managed Queues are backed by SQS, but inside a Laravel Cloud container jobs are
-**received from an in-container `cloud-agent` sidecar** over a unix socket rather
-than polled from SQS directly. This package provides a Messenger transport that:
+This is a **feature-based bundle**, not a single-purpose package. It is a thin
+host that owns the shared Laravel Cloud platform primitives available inside a
+Cloud container — the in-container **agent runtime socket** and the
+**observability log socket** — and exposes them to a set of self-contained
+*features*. Each feature plugs in its own configuration and services and builds
+on those shared primitives.
 
-- **pushes** jobs straight to SQS, and
-- **receives** them from the agent (`GET /next`), reporting each outcome back
-  (`POST /result`) so the agent performs the actual SQS delete / visibility change.
-
-When the agent socket is absent (e.g. local development) it transparently falls
-back to receiving from SQS directly.
+**[Managed Queues](#managed-queues)** is the first feature. As more of the
+Laravel Cloud platform becomes available to Symfony, each capability is added as
+another feature behind the same `laravel_cloud.*` configuration — see
+[Adding a feature](#adding-a-feature).
 
 ## Installation
 
@@ -24,6 +25,52 @@ The bundle is auto-registered by Symfony Flex. If registering manually, add
 `Laravel\Cloud\Symfony\LaravelCloudBundle` to `config/bundles.php`.
 
 ## Configuration
+
+All configuration lives under the `laravel_cloud` key. The top level holds the
+shared platform primitives; each feature has its own sub-section and can be
+toggled with an `enabled` flag.
+
+```yaml
+# config/packages/laravel_cloud.yaml
+laravel_cloud:
+    # Shared platform primitives (sensible defaults; rarely set by hand).
+    agent_socket: '/tmp/cloud-agent.sock'
+    log_socket: 'unix:///tmp/cloud-init.sock'
+
+    # Features.
+    queue:
+        enabled: true   # Managed Queues — on by default
+```
+
+These platform settings are overridable at runtime by the environment variables
+Laravel Cloud injects:
+
+| Environment variable          | Purpose                                  | Default                       |
+| ----------------------------- | ---------------------------------------- | ----------------------------- |
+| `LARAVEL_CLOUD_AGENT_SOCKET`  | Path to the cloud-agent runtime socket   | `/tmp/cloud-agent.sock`       |
+| `LARAVEL_CLOUD_LOG_SOCKET`    | Address of the observability log socket  | `unix:///tmp/cloud-init.sock` |
+
+---
+
+## Managed Queues
+
+Run [Laravel Cloud Managed Queues](https://laravel.com/cloud) on top of
+[Symfony Messenger](https://symfony.com/doc/current/messenger.html).
+
+Managed Queues are backed by SQS, but inside a Laravel Cloud container jobs are
+**received from the in-container `cloud-agent` sidecar** over a unix socket
+rather than polled from SQS directly. This feature provides a Messenger
+transport that:
+
+- **pushes** jobs straight to SQS, and
+- **receives** them from the agent (`GET /next`), reporting each outcome back
+  (`POST /result`) so the agent performs the actual SQS delete / visibility
+  change.
+
+When the agent socket is absent (e.g. local development) it transparently falls
+back to receiving from SQS directly.
+
+### Usage
 
 Define a Messenger transport with the `laravel-cloud://` DSN and route your
 messages to it:
@@ -42,11 +89,9 @@ The SQS coordinates are read from the `LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG`
 environment variable injected by Laravel Cloud, so the DSN itself carries no
 connection detail.
 
-| Environment variable                   | Purpose                                            | Default                 |
-| -------------------------------------- | -------------------------------------------------- | ----------------------- |
-| `LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG`  | JSON describing the SQS connection (prefix, suffix, queue, region, credentials) | — |
-| `LARAVEL_CLOUD_AGENT_SOCKET`           | Path to the cloud-agent runtime socket             | `/tmp/cloud-agent.sock` |
-| `LARAVEL_CLOUD_LOG_SOCKET`             | Address of the observability log socket            | `unix:///tmp/cloud-init.sock` |
+| Environment variable                  | Purpose                                                                         |
+| ------------------------------------- | ------------------------------------------------------------------------------- |
+| `LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG` | JSON describing the SQS connection (prefix, suffix, queue, region, credentials) |
 
 Force the receive mode with the `use_agent` transport option if auto-detection
 (socket presence) isn't desired:
@@ -55,7 +100,9 @@ Force the receive mode with the `use_agent` transport option if auto-detection
 cloud: 'laravel-cloud://managed-queue?use_agent=true'
 ```
 
-## Semantics
+Disable the feature entirely with `laravel_cloud.queue.enabled: false`.
+
+### Semantics
 
 | Messenger    | Managed queue                                                    |
 | ------------ | ---------------------------------------------------------------- |
@@ -69,12 +116,12 @@ how Symfony's own SQS transport behaves. The agent's `released` outcome (reset
 visibility for SQS-native redelivery) is therefore not used under Messenger's
 re-send retry model.
 
-## Observability
+### Observability
 
 So Managed Queues surface the same metrics in the Laravel Cloud dashboard as a
-Laravel app, the bundle emits the same observability events Laravel's framework
-does — newline-delimited JSON written to the `LARAVEL_CLOUD_LOG_SOCKET` (the
-wire protocol of `Illuminate\Foundation\Cloud\Events`). A Messenger event
+Laravel app, the feature emits the same observability events Laravel's framework
+does — newline-delimited JSON written to the shared `LARAVEL_CLOUD_LOG_SOCKET`
+(the wire protocol of `Illuminate\Foundation\Cloud\Events`). A Messenger event
 subscriber maps the worker lifecycle onto those events:
 
 | Cloud event              | When                                              | Mapped from                    |
@@ -99,6 +146,78 @@ never affects job processing.
 > constants in `QueueEventSubscriber`). The durable fix is platform-side —
 > adding `multiline.parser cri` to the collector's tail input — after which the
 > caps can be relaxed.
+
+---
+
+## Architecture
+
+```
+LaravelCloudBundle            thin host: owns the shared platform primitives,
+│                             registers each enabled feature
+├── PlatformContext           agent socket · log socket · Events emitter
+├── Observability\Events      shared log-socket event emitter (any feature)
+│
+└── features (CloudFeature[])
+    └── Queue\QueueFeature     Managed Queues — Messenger transport, SQS client,
+                               agent client, queue metrics subscriber
+```
+
+The bundle never special-cases any one feature. It wires the shared primitives
+once, then loops over its features — each declaring its own `laravel_cloud.<name>`
+config and registering its own services through the `CloudFeature` contract.
+
+## Adding a feature
+
+A Laravel Cloud feature is a single class implementing
+`Laravel\Cloud\Symfony\CloudFeature`:
+
+```php
+use Laravel\Cloud\Symfony\CloudFeature;
+use Laravel\Cloud\Symfony\PlatformContext;
+use Symfony\Component\Config\Definition\Builder\NodeBuilder;
+use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
+
+final class CacheFeature implements CloudFeature
+{
+    public function name(): string
+    {
+        return 'cache'; // lives under laravel_cloud.cache
+    }
+
+    public function configure(NodeBuilder $builder): void
+    {
+        $builder->arrayNode($this->name())->canBeDisabled()->end();
+    }
+
+    public function register(array $config, ContainerConfigurator $container, ContainerBuilder $builder, PlatformContext $platform): void
+    {
+        // Build on the shared primitives without knowing their wiring:
+        //   $platform->events()       — emit dashboard metrics over the log socket
+        //   $platform->agentSocket()  — talk to the in-container agent sidecar
+        //   $platform->logSocket()    — the raw log socket address
+        $container->services()
+            ->set(MyCacheService::class)
+            ->args([$platform->events()]);
+    }
+}
+```
+
+Then list it in the bundle's feature set:
+
+```php
+protected function features(): array
+{
+    return [
+        new Queue\QueueFeature(),
+        new CacheFeature(),
+    ];
+}
+```
+
+That's the whole extension point — no other part of the bundle changes. The new
+feature gets its own config sub-tree, an `enabled` toggle, and access to every
+shared platform primitive.
 
 ## Testing
 

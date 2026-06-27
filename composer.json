@@ -1,6 +1,6 @@
 {
     "name": "laravel/symfony-on-cloud",
-    "description": "Laravel Cloud integration for Symfony — run Laravel Cloud Managed Queues on top of Symfony Messenger.",
+    "description": "Bring Laravel Cloud features to Symfony — a feature-based bundle whose first capability is Managed Queues on top of Symfony Messenger.",
     "type": "symfony-bundle",
     "license": "MIT",
     "require": {

@@ -1,11 +1,11 @@
 <?php
 
-namespace Laravel\Cloud\Symfony\Observability;
+namespace Laravel\Cloud\Symfony\Queue;
 
-use Laravel\Cloud\Symfony\ManagedQueueConfig;
-use Laravel\Cloud\Symfony\Messenger\CloudProcessingStartedStamp;
-use Laravel\Cloud\Symfony\Messenger\CloudQueueReceivedStamp;
-use Laravel\Cloud\Symfony\Messenger\CloudQueueTransport;
+use Laravel\Cloud\Symfony\Observability\Events;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudProcessingStartedStamp;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueReceivedStamp;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransport;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\SendMessageToTransportsEvent;

@@ -1,6 +1,6 @@
 <?php
 
-namespace Laravel\Cloud\Symfony;
+namespace Laravel\Cloud\Symfony\Queue;
 
 /**
  * Parses the LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG blob injected by Laravel Cloud

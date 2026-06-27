@@ -1,0 +1,83 @@
+<?php
+
+namespace Laravel\Cloud\Symfony\Queue;
+
+use Laravel\Cloud\Symfony\CloudFeature;
+use Laravel\Cloud\Symfony\PlatformContext;
+use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransportFactory;
+use Laravel\Cloud\Symfony\Queue\Sqs\SqsClientFactory;
+use Symfony\Component\Config\Definition\Builder\NodeBuilder;
+use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
+
+use function Symfony\Component\DependencyInjection\Loader\Configurator\env;
+use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
+
+/**
+ * The Laravel Cloud Managed Queues feature for Symfony.
+ *
+ * Wires a Messenger transport factory (laravel-cloud://) backed by the parsed
+ * managed-queue config, an SQS client, the cloud-agent runtime client, and the
+ * observability subscriber that emits queue metrics to the Cloud dashboard over
+ * the shared log socket.
+ *
+ * Inside a Laravel Cloud container jobs are pushed straight to SQS but received
+ * from the in-container cloud-agent sidecar; when that socket is absent (local
+ * development) it transparently falls back to receiving from SQS directly.
+ */
+final class QueueFeature implements CloudFeature
+{
+    public function name(): string
+    {
+        return 'queue';
+    }
+
+    public function configure(NodeBuilder $builder): void
+    {
+        // Managed Queues is on by default; set `laravel_cloud.queue.enabled:
+        // false` to leave the transport, SQS client and metrics out entirely.
+        $builder
+            ->arrayNode($this->name())
+                ->info('Laravel Cloud Managed Queues, on top of Symfony Messenger.')
+                ->canBeDisabled()
+            ->end();
+    }
+
+    public function register(array $config, ContainerConfigurator $container, ContainerBuilder $builder, PlatformContext $platform): void
+    {
+        $services = $container->services();
+
+        // Parsed managed-queue config. The env var is read with a default so the
+        // container still boots locally with no managed queue provisioned.
+        $services->set(ManagedQueueConfig::class)
+            ->factory([ManagedQueueConfig::class, 'fromEnvironment'])
+            ->args([
+                env('default::LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG'),
+                $platform->agentSocket(),
+            ]);
+
+        $services->set(SqsClientFactory::class)
+            ->args([service(ManagedQueueConfig::class)]);
+
+        $services->set(AgentClient::class)
+            ->args([$platform->agentSocket()]);
+
+        $services->set(CloudQueueTransportFactory::class)
+            ->args([
+                service(ManagedQueueConfig::class),
+                service(SqsClientFactory::class),
+                service(AgentClient::class),
+            ])
+            ->tag('messenger.transport_factory');
+
+        // Observability: a Messenger subscriber that maps the worker lifecycle
+        // onto queue/failed_job events, emitted through the shared log socket.
+        $services->set(QueueEventSubscriber::class)
+            ->args([
+                $platform->events(),
+                service(ManagedQueueConfig::class),
+            ])
+            ->tag('kernel.event_subscriber');
+    }
+}

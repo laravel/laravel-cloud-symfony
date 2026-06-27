@@ -3,12 +3,12 @@
 namespace Laravel\Cloud\Symfony\Tests;
 
 use Aws\Sqs\SqsClient;
-use Laravel\Cloud\Symfony\Agent\AgentClient;
-use Laravel\Cloud\Symfony\ManagedQueueConfig;
-use Laravel\Cloud\Symfony\Messenger\CloudQueueReceivedStamp;
-use Laravel\Cloud\Symfony\Messenger\CloudQueueTransport;
+use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
+use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueReceivedStamp;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransport;
 use Laravel\Cloud\Symfony\Observability\Events;
-use Laravel\Cloud\Symfony\Observability\QueueEventSubscriber;
+use Laravel\Cloud\Symfony\Queue\QueueEventSubscriber;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\SendMessageToTransportsEvent;

@@ -1,10 +1,10 @@
 <?php
 
-namespace Laravel\Cloud\Symfony\Messenger;
+namespace Laravel\Cloud\Symfony\Queue\Messenger;
 
 use Aws\Sqs\SqsClient;
-use Laravel\Cloud\Symfony\Agent\AgentClient;
-use Laravel\Cloud\Symfony\ManagedQueueConfig;
+use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
+use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
 use Symfony\Component\Messenger\Exception\TransportException;

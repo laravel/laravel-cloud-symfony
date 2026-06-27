@@ -9,8 +9,8 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
-use Laravel\Cloud\Symfony\Agent\AgentClient;
-use Laravel\Cloud\Symfony\Agent\AgentUnreachableException;
+use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
+use Laravel\Cloud\Symfony\Queue\Agent\AgentUnreachableException;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 

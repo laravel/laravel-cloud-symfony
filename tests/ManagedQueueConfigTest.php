@@ -2,7 +2,7 @@
 
 namespace Laravel\Cloud\Symfony\Tests;
 
-use Laravel\Cloud\Symfony\ManagedQueueConfig;
+use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
 use PHPUnit\Framework\TestCase;
 
 class ManagedQueueConfigTest extends TestCase

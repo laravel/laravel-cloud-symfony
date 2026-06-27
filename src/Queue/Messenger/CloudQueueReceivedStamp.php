@@ -1,6 +1,6 @@
 <?php
 
-namespace Laravel\Cloud\Symfony\Messenger;
+namespace Laravel\Cloud\Symfony\Queue\Messenger;
 
 use Symfony\Component\Messenger\Stamp\NonSendableStampInterface;
 

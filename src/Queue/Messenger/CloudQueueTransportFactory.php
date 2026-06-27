@@ -1,10 +1,10 @@
 <?php
 
-namespace Laravel\Cloud\Symfony\Messenger;
+namespace Laravel\Cloud\Symfony\Queue\Messenger;
 
-use Laravel\Cloud\Symfony\Agent\AgentClient;
-use Laravel\Cloud\Symfony\ManagedQueueConfig;
-use Laravel\Cloud\Symfony\Sqs\SqsClientFactory;
+use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
+use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
+use Laravel\Cloud\Symfony\Queue\Sqs\SqsClientFactory;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\TransportFactoryInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;

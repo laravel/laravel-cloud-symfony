@@ -1,6 +1,6 @@
 <?php
 
-namespace Laravel\Cloud\Symfony\Agent;
+namespace Laravel\Cloud\Symfony\Queue\Agent;
 
 use RuntimeException;
 
