@@ -4,6 +4,7 @@ namespace Laravel\Cloud\Symfony\Queue;
 
 use Laravel\Cloud\Symfony\CloudFeature;
 use Laravel\Cloud\Symfony\PlatformContext;
+use Laravel\Cloud\Symfony\PrependsConfig;
 use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransportFactory;
 use Laravel\Cloud\Symfony\Queue\Sqs\SqsClientFactory;
@@ -26,11 +27,41 @@ use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
  * from the in-container cloud-agent sidecar; when that socket is absent (local
  * development) it transparently falls back to receiving from SQS directly.
  */
-final class QueueFeature implements CloudFeature
+final class QueueFeature implements CloudFeature, PrependsConfig
 {
+    /**
+     * The DSN that selects this feature's managed-queue transport. Carries no
+     * connection detail itself — see {@see CloudQueueTransportFactory}.
+     */
+    private const TRANSPORT_DSN = 'laravel-cloud://managed-queue';
+
     public function name(): string
     {
         return 'queue';
+    }
+
+    /**
+     * Ship a ready-made `cloud` Messenger transport that always points at
+     * Laravel Cloud Managed Queues, so an app can route to it without declaring
+     * a transport or wiring up a DSN:
+     *
+     *   framework:
+     *       messenger:
+     *           routing:
+     *               '*': cloud
+     *
+     * Prepended (rather than loaded) so an app can still redefine `cloud`
+     * itself if it ever needs to.
+     */
+    public function prepend(ContainerConfigurator $container, ContainerBuilder $builder): void
+    {
+        $container->extension('framework', [
+            'messenger' => [
+                'transports' => [
+                    'cloud' => self::TRANSPORT_DSN,
+                ],
+            ],
+        ], prepend: true);
     }
 
     public function configure(NodeBuilder $builder): void

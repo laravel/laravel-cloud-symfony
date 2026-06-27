@@ -8,6 +8,7 @@ use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransportFactory;
 use Laravel\Cloud\Symfony\Queue\QueueEventSubscriber;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\Extension\PrependExtensionInterface;
 
 /**
  * The bundle is a feature host: it always wires the shared platform primitives
@@ -42,6 +43,20 @@ class LaravelCloudBundleTest extends TestCase
         $this->assertFalse($container->hasDefinition(QueueEventSubscriber::class));
     }
 
+    public function testItPrependsAReadyMadeCloudTransportWhenTheQueueFeatureIsEnabled(): void
+    {
+        $transports = $this->prependedMessengerTransports();
+
+        $this->assertSame('laravel-cloud://managed-queue', $transports['cloud'] ?? null);
+    }
+
+    public function testItDoesNotPrependTheCloudTransportWhenTheQueueFeatureIsDisabled(): void
+    {
+        $transports = $this->prependedMessengerTransports(['queue' => ['enabled' => false]]);
+
+        $this->assertArrayNotHasKey('cloud', $transports);
+    }
+
     /**
      * @param  array<string, mixed>  $config
      */
@@ -56,5 +71,30 @@ class LaravelCloudBundleTest extends TestCase
         $extension->load([$config], $container);
 
         return $container;
+    }
+
+    /**
+     * Run the bundle's prepend pass with the given `laravel_cloud` config and
+     * return the Messenger transports it contributed to FrameworkBundle.
+     *
+     * @param  array<string, mixed>  $config
+     * @return array<string, mixed>
+     */
+    private function prependedMessengerTransports(array $config = []): array
+    {
+        $bundle = new LaravelCloudBundle();
+        $container = new ContainerBuilder();
+        $container->prependExtensionConfig('laravel_cloud', $config);
+
+        // The bundle's extension implements PrependExtensionInterface and routes
+        // prepend() to LaravelCloudBundle::prependExtension — the same path the
+        // kernel takes when building the container.
+        $extension = $bundle->getContainerExtension();
+        $this->assertInstanceOf(PrependExtensionInterface::class, $extension);
+        $extension->prepend($container);
+
+        $framework = $container->getExtensionConfig('framework');
+
+        return $framework[0]['messenger']['transports'] ?? [];
     }
 }

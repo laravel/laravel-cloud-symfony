@@ -57,6 +57,25 @@ class LaravelCloudBundle extends AbstractBundle
         }
     }
 
+    public function prependExtension(ContainerConfigurator $container, ContainerBuilder $builder): void
+    {
+        $config = $this->resolveConfig($builder);
+
+        foreach ($this->features() as $feature) {
+            if (! $feature instanceof PrependsConfig) {
+                continue;
+            }
+
+            // Mirror loadExtension's enabled rule: a feature is on unless its
+            // own config slice explicitly turned it off.
+            if (($config[$feature->name()]['enabled'] ?? true) === false) {
+                continue;
+            }
+
+            $feature->prepend($container, $builder);
+        }
+    }
+
     public function loadExtension(array $config, ContainerConfigurator $container, ContainerBuilder $builder): void
     {
         $platform = $this->registerPlatform($config, $container);
@@ -101,5 +120,42 @@ class LaravelCloudBundle extends AbstractBundle
             ->args(['%laravel_cloud.log_socket%']);
 
         return new PlatformContext('laravel_cloud.agent_socket', 'laravel_cloud.log_socket');
+    }
+
+    /**
+     * Deep-merge the raw `laravel_cloud` config layers. Prepend runs before the
+     * config is processed against the definition tree, so we merge the
+     * unprocessed layers ourselves — just enough to read each feature's
+     * `enabled` flag and decide what to prepend.
+     *
+     * @return array<string, mixed>
+     */
+    private function resolveConfig(ContainerBuilder $builder): array
+    {
+        $merged = [];
+
+        foreach ($builder->getExtensionConfig('laravel_cloud') as $layer) {
+            $merged = $this->deepMerge($merged, $layer);
+        }
+
+        return $merged;
+    }
+
+    /**
+     * @param  array<string, mixed>  $base
+     * @param  array<string, mixed>  $override
+     * @return array<string, mixed>
+     */
+    private function deepMerge(array $base, array $override): array
+    {
+        foreach ($override as $key => $value) {
+            if (is_array($value) && is_array($base[$key] ?? null)) {
+                $base[$key] = $this->deepMerge($base[$key], $value);
+            } else {
+                $base[$key] = $value;
+            }
+        }
+
+        return $base;
     }
 }
