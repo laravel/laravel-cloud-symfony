@@ -9,6 +9,7 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
 use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
+use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Messenger\Transport\Receiver\QueueReceiverInterface;
@@ -153,8 +154,23 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
             }
 
             if (($delayStamp = $envelope->last(DelayStamp::class)) instanceof DelayStamp && $delayStamp->getDelay() > 0) {
-                // SQS delivery delay is whole seconds, capped at 15 minutes.
-                $args['DelaySeconds'] = min(900, intdiv($delayStamp->getDelay(), 1000));
+                // SQS delivery delay is whole seconds and hard-capped at 15
+                // minutes. A retry's backoff delay is best-effort, so clamp it and
+                // let the retry through; but a delay the caller asked for
+                // explicitly is unsatisfiable past the cap, so fail loudly rather
+                // than silently delivering after 15 minutes (e.g. a job that must
+                // run in an hour is a bug if it runs in 15 minutes instead).
+                $seconds = intdiv($delayStamp->getDelay(), 1000);
+
+                if ($seconds > 900) {
+                    if (! $this->isRetry($envelope)) {
+                        throw new TransportException(sprintf('A message delay of %d seconds exceeds the SQS maximum of 900 seconds (15 minutes); SQS cannot delay a message beyond 15 minutes.', $seconds));
+                    }
+
+                    $seconds = 900;
+                }
+
+                $args['DelaySeconds'] = $seconds;
             }
         }
 
@@ -309,6 +325,17 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
         } catch (\Throwable $e) {
             throw new TransportException($e->getMessage(), 0, $e);
         }
+    }
+
+    /**
+     * Whether this envelope is a Messenger retry (re-sent with a RedeliveryStamp)
+     * rather than an original dispatch. A retry's DelayStamp is the strategy's
+     * backoff, which we treat as best-effort; an original dispatch's delay is a
+     * caller request we must honour exactly or reject.
+     */
+    private function isRetry(Envelope $envelope): bool
+    {
+        return $envelope->last(RedeliveryStamp::class) instanceof RedeliveryStamp;
     }
 
     private function receivedStamp(Envelope $envelope): CloudQueueReceivedStamp

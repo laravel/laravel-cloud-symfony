@@ -156,6 +156,15 @@ The two stamps mirror the two queue models and don't mix: `CloudMessageGroupStam
 is for fair queues (standard) and is rejected on a `.fifo` queue, where the group
 is an ordering scope set via `CloudFifoStamp` instead.
 
+### Delays
+
+A `DelayStamp` on a standard queue maps to an SQS per-message delivery delay,
+which SQS hard-caps at **15 minutes**. Asking for a longer delay is unsatisfiable,
+so the transport **throws** rather than silently delivering after 15 minutes — a
+job that must run in an hour shouldn't quietly run in fifteen. (A Messenger retry
+backoff that exceeds the cap is best-effort, so it's clamped to 15 minutes instead
+of failing the retry.) FIFO queues don't support a per-message delay at all.
+
 ### Local development
 
 The `cloud` transport is just a default, so an app-defined transport of the same

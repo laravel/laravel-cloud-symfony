@@ -22,6 +22,7 @@ use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
+use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
@@ -187,6 +188,39 @@ class CloudQueueTransportTest extends TestCase
             ->with(new DelayStamp(5000)));
 
         $this->assertArrayNotHasKey('DelaySeconds', $this->sqsCommands[0]);
+    }
+
+    public function testACallerSetDelayBeyondFifteenMinutesIsRejected(): void
+    {
+        $transport = $this->transport(useAgent: false);
+
+        $this->expectException(TransportException::class);
+        $this->expectExceptionMessage('exceeds the SQS maximum');
+
+        // The caller asked for a one-hour delay; SQS can't honour it, so we must
+        // say so rather than silently deliver after 15 minutes.
+        $transport->send((new Envelope(new DummyMessage('in an hour')))
+            ->with(new DelayStamp(3_600_000)));
+    }
+
+    public function testARetryBackoffBeyondFifteenMinutesIsClampedNotRejected(): void
+    {
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = $cmd->toArray();
+
+            return new Result(['MessageId' => 'id']);
+        });
+
+        $transport = $this->transport(useAgent: false);
+
+        // A retry re-sends with a RedeliveryStamp; its backoff is best-effort, so
+        // a value past the cap is clamped to 15 minutes rather than breaking the
+        // retry.
+        $transport->send((new Envelope(new DummyMessage('retry')))
+            ->with(new DelayStamp(3_600_000))
+            ->with(new RedeliveryStamp(2)));
+
+        $this->assertSame(900, $this->sqsCommands[0]['DelaySeconds']);
     }
 
     public function testGetFromQueuesReceivesFromTheNamedQueue(): void
