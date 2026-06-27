@@ -14,6 +14,11 @@ use Symfony\Component\Messenger\Transport\TransportInterface;
  *
  *   laravel-cloud://managed-queue
  *
+ * The host segment selects the mechanic; both the singular and plural spelling
+ * (managed-queue / managed-queues) map to Managed Queues, and a trailing slash
+ * or query string is allowed (laravel-cloud://managed-queue/?queue=test). Only
+ * the parsed host is significant — see {@see supports()}.
+ *
  * The SQS coordinates come from LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG (parsed into
  * ManagedQueueConfig), so the DSN itself carries no connection detail — it just
  * selects this transport.
@@ -24,6 +29,12 @@ use Symfony\Component\Messenger\Transport\TransportInterface;
  */
 final class CloudQueueTransportFactory implements TransportFactoryInterface
 {
+    /**
+     * Host segments that select the Managed Queues transport. The plural is
+     * accepted as a forgiving alias for the canonical singular spelling.
+     */
+    private const HOSTS = ['managed-queue', 'managed-queues'];
+
     public function __construct(
         private readonly ManagedQueueConfig $config,
         private readonly SqsClientFactory $sqsClientFactory,
@@ -46,6 +57,10 @@ final class CloudQueueTransportFactory implements TransportFactoryInterface
 
     public function supports(#[\SensitiveParameter] string $dsn, array $options): bool
     {
-        return str_starts_with($dsn, 'laravel-cloud://');
+        // This bundle owns the laravel-cloud:// scheme; the host picks the
+        // mechanic. parse_url() collapses every accepted form — query string,
+        // trailing slash — down to the bare host, so we match on that alone.
+        return str_starts_with($dsn, 'laravel-cloud://')
+            && in_array(strtolower((string) parse_url($dsn, PHP_URL_HOST)), self::HOSTS, true);
     }
 }
