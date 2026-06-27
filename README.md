@@ -120,8 +120,9 @@ $bus->dispatch(new ProcessOrder($order), [
 ```
 
 A `CloudFifoStamp` is only valid on a `.fifo` queue; applying it to a standard
-queue throws rather than being silently ignored. FIFO queues don't support
-per-message delivery delay, so any `DelayStamp` is ignored for them.
+queue throws rather than being silently ignored. FIFO queues don't support a
+per-message delivery delay at all, so a caller-set `DelayStamp` is rejected (see
+[Delays](#delays) below).
 
 ### Fair queues
 
@@ -163,7 +164,11 @@ which SQS hard-caps at **15 minutes**. Asking for a longer delay is unsatisfiabl
 so the transport **throws** rather than silently delivering after 15 minutes — a
 job that must run in an hour shouldn't quietly run in fifteen. (A Messenger retry
 backoff that exceeds the cap is best-effort, so it's clamped to 15 minutes instead
-of failing the retry.) FIFO queues don't support a per-message delay at all.
+of failing the retry.)
+
+FIFO queues don't support a per-message delay at all, so a caller-set `DelayStamp`
+on a `.fifo` queue is rejected outright — same principle, same loud failure. (A
+retry's backoff delay is dropped silently there so the retry still goes out.)
 
 ### Local development
 

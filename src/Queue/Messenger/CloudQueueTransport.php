@@ -137,6 +137,14 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
             // can be set explicitly via a CloudFifoStamp.
             $args['MessageGroupId'] = $fifo?->messageGroupId ?? $queue;
             $args['MessageDeduplicationId'] = $fifo?->messageDeduplicationId ?? (string) Uuid::v7();
+
+            // FIFO queues don't support a per-message delay at all (only a
+            // queue-level one). Ignore a retry's backoff delay so retries keep
+            // working, but fail loudly when the caller asked for a delay
+            // explicitly rather than delivering it immediately behind their back.
+            if (($delayStamp = $envelope->last(DelayStamp::class)) instanceof DelayStamp && $delayStamp->getDelay() > 0 && ! $this->isRetry($envelope)) {
+                throw new TransportException(sprintf('The FIFO queue "%s" does not support a per-message delay; remove the DelayStamp or dispatch to a standard queue.', $queue));
+            }
         } else {
             if ($fifo instanceof CloudFifoStamp) {
                 // FIFO attributes on a standard queue are meaningless; fail loudly

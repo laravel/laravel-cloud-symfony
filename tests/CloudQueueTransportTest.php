@@ -173,7 +173,21 @@ class CloudQueueTransportTest extends TestCase
             ->with(new CloudMessageGroupStamp('customer-7')));
     }
 
-    public function testSendToAFifoQueueIgnoresTheDelayStamp(): void
+    public function testACallerSetDelayOnAFifoQueueIsRejected(): void
+    {
+        $transport = $this->transport(useAgent: false);
+
+        $this->expectException(TransportException::class);
+        $this->expectExceptionMessage('does not support a per-message delay');
+
+        // FIFO queues can't delay per message, so honour the caller by saying so
+        // rather than delivering immediately behind their back.
+        $transport->send((new Envelope(new DummyMessage('ordered')))
+            ->with(new CloudQueueStamp('orders.fifo'))
+            ->with(new DelayStamp(5000)));
+    }
+
+    public function testAFifoRetryBackoffDelayIsIgnoredNotRejected(): void
     {
         $this->sqsMock->append(function (CommandInterface $cmd) {
             $this->sqsCommands[] = $cmd->toArray();
@@ -182,10 +196,13 @@ class CloudQueueTransportTest extends TestCase
         });
 
         $transport = $this->transport(useAgent: false);
-        // FIFO queues reject per-message delivery delay, so it must not be sent.
+
+        // A retry re-sends with a RedeliveryStamp; FIFO can't apply its backoff
+        // delay, so it's dropped (not rejected) and the message still goes out.
         $transport->send((new Envelope(new DummyMessage('ordered')))
             ->with(new CloudQueueStamp('orders.fifo'))
-            ->with(new DelayStamp(5000)));
+            ->with(new DelayStamp(5000))
+            ->with(new RedeliveryStamp(1)));
 
         $this->assertArrayNotHasKey('DelaySeconds', $this->sqsCommands[0]);
     }
