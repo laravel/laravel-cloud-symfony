@@ -47,7 +47,10 @@ class LaravelCloudBundleTest extends TestCase
     {
         $transports = $this->prependedMessengerTransports();
 
-        $this->assertSame('laravel-cloud://managed-queue', $transports['cloud'] ?? null);
+        $this->assertSame('laravel-cloud://managed-queue', $transports['cloud']['dsn'] ?? null);
+        // Messenger's re-send retry is off; CloudRetrySubscriber owns retries via
+        // SQS-native redelivery instead.
+        $this->assertSame(0, $transports['cloud']['retry_strategy']['max_retries'] ?? null);
     }
 
     public function testItDoesNotPrependTheCloudTransportWhenTheQueueFeatureIsDisabled(): void

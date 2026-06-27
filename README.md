@@ -162,13 +162,44 @@ is an ordering scope set via `CloudFifoStamp` instead.
 A `DelayStamp` on a standard queue maps to an SQS per-message delivery delay,
 which SQS hard-caps at **15 minutes**. Asking for a longer delay is unsatisfiable,
 so the transport **throws** rather than silently delivering after 15 minutes — a
-job that must run in an hour shouldn't quietly run in fifteen. (A Messenger retry
-backoff that exceeds the cap is best-effort, so it's clamped to 15 minutes instead
-of failing the retry.)
+job that must run in an hour shouldn't quietly run in fifteen.
 
-FIFO queues don't support a per-message delay at all, so a caller-set `DelayStamp`
-on a `.fifo` queue is rejected outright — same principle, same loud failure. (A
-retry's backoff delay is dropped silently there so the retry still goes out.)
+FIFO queues don't support a per-message delay at all, so a `DelayStamp` on a
+`.fifo` queue is rejected outright — same principle, same loud failure.
+
+(This is about *dispatch* delays only. Retry backoff is a separate path that
+isn't bound by the 15-minute cap — see [Retries](#retries).)
+
+### Retries
+
+When a handler fails, the transport retries exactly as Laravel does: it **releases
+the message back to SQS** for native redelivery via the visibility timeout, rather
+than re-sending a fresh copy. The original message stays put and SQS redelivers it
+after the backoff — so retries are never re-dispatched, the backoff can run up to
+SQS's **12-hour** visibility ceiling (not the 15-minute send cap), and it works
+unchanged on FIFO queues. On Cloud the in-container agent performs the release;
+locally it's a direct `ChangeMessageVisibility`.
+
+Symfony Messenger's own re-send retry is therefore turned off for the `cloud`
+transport — this package owns retries. The attempt count comes from SQS's
+`ApproximateReceiveCount`, and an `UnrecoverableExceptionInterface` (or a handler
+failure wrapping one) skips straight to failure, just like Messenger.
+
+Tune it under `laravel_cloud.queue.retry` (defaults shown):
+
+```yaml
+# config/packages/laravel_cloud.yaml
+laravel_cloud:
+    queue:
+        retry:
+            max_attempts: 3      # total deliveries before a job is failed
+            base_delay: 1000     # first backoff, in milliseconds
+            multiplier: 2        # backoff multiplier per attempt
+            max_delay: 0         # backoff ceiling in ms; 0 = none (SQS still caps at 12h)
+```
+
+A job that exhausts its attempts (or throws an unrecoverable exception) is deleted
+and recorded as a failed job, surfacing in the Laravel Cloud dashboard.
 
 ### Local development
 

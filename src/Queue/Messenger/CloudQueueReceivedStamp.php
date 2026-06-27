@@ -12,6 +12,11 @@ use Symfony\Component\Messenger\Stamp\NonSendableStampInterface;
  * It also retains the raw message body so that, on a terminal failure, the
  * cloud "failed_job" event can report the exact payload the queue carried —
  * exactly as Laravel logs the raw payload for a failed job.
+ *
+ * $approximateReceiveCount carries SQS's ApproximateReceiveCount — how many times
+ * this message has been delivered — which CloudRetrySubscriber uses as the
+ * attempt counter when deciding whether to release for retry or fail, the same
+ * source as Laravel's SqsJob::attempts().
  */
 final class CloudQueueReceivedStamp implements NonSendableStampInterface
 {
@@ -21,6 +26,7 @@ final class CloudQueueReceivedStamp implements NonSendableStampInterface
         public readonly string $queueUrl,
         public readonly bool $fromAgent,
         public readonly string $body = '',
+        public readonly int $approximateReceiveCount = 1,
     ) {
     }
 }

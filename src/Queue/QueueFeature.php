@@ -58,7 +58,13 @@ final class QueueFeature implements CloudFeature, PrependsConfig
         $container->extension('framework', [
             'messenger' => [
                 'transports' => [
-                    'cloud' => self::TRANSPORT_DSN,
+                    'cloud' => [
+                        'dsn' => self::TRANSPORT_DSN,
+                        // Retries are handled by CloudRetrySubscriber via
+                        // SQS-native redelivery (visibility timeout), so
+                        // Messenger's own re-send retry is turned off here.
+                        'retry_strategy' => ['max_retries' => 0],
+                    ],
                 ],
             ],
         ], prepend: true);
@@ -72,6 +78,18 @@ final class QueueFeature implements CloudFeature, PrependsConfig
             ->arrayNode($this->name())
                 ->info('Laravel Cloud Managed Queues, on top of Symfony Messenger.')
                 ->canBeDisabled()
+                ->children()
+                    ->arrayNode('retry')
+                        ->info('How failed jobs are retried, via SQS-native redelivery (visibility timeout).')
+                        ->addDefaultsIfNotSet()
+                        ->children()
+                            ->integerNode('max_attempts')->min(1)->defaultValue(3)->info('Total delivery attempts before a job is failed.')->end()
+                            ->integerNode('base_delay')->min(0)->defaultValue(1000)->info('First retry backoff, in milliseconds.')->end()
+                            ->floatNode('multiplier')->min(1)->defaultValue(2)->info('Backoff multiplier applied per attempt.')->end()
+                            ->integerNode('max_delay')->min(0)->defaultValue(0)->info('Backoff ceiling in milliseconds; 0 = no cap (SQS still caps at 12h).')->end()
+                        ->end()
+                    ->end()
+                ->end()
             ->end();
     }
 
@@ -108,6 +126,19 @@ final class QueueFeature implements CloudFeature, PrependsConfig
             ->args([
                 $platform->events(),
                 service(ManagedQueueConfig::class),
+            ])
+            ->tag('kernel.event_subscriber');
+
+        // Retries: release failed jobs back to SQS for native redelivery
+        // (visibility timeout) instead of Messenger's re-send model, mirroring
+        // Laravel's $job->release(). Messenger's own retry is disabled for the
+        // cloud transport (see prepend()).
+        $services->set(CloudRetrySubscriber::class)
+            ->args([
+                $config['retry']['max_attempts'],
+                $config['retry']['base_delay'],
+                $config['retry']['multiplier'],
+                $config['retry']['max_delay'],
             ])
             ->tag('kernel.event_subscriber');
     }

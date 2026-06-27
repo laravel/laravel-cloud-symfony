@@ -16,13 +16,13 @@ use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudFifoStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudMessageGroupStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueReceivedStamp;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudReleaseStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransport;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
-use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
@@ -187,26 +187,6 @@ class CloudQueueTransportTest extends TestCase
             ->with(new DelayStamp(5000)));
     }
 
-    public function testAFifoRetryBackoffDelayIsIgnoredNotRejected(): void
-    {
-        $this->sqsMock->append(function (CommandInterface $cmd) {
-            $this->sqsCommands[] = $cmd->toArray();
-
-            return new Result(['MessageId' => 'id']);
-        });
-
-        $transport = $this->transport(useAgent: false);
-
-        // A retry re-sends with a RedeliveryStamp; FIFO can't apply its backoff
-        // delay, so it's dropped (not rejected) and the message still goes out.
-        $transport->send((new Envelope(new DummyMessage('ordered')))
-            ->with(new CloudQueueStamp('orders.fifo'))
-            ->with(new DelayStamp(5000))
-            ->with(new RedeliveryStamp(1)));
-
-        $this->assertArrayNotHasKey('DelaySeconds', $this->sqsCommands[0]);
-    }
-
     public function testACallerSetDelayBeyondFifteenMinutesIsRejected(): void
     {
         $transport = $this->transport(useAgent: false);
@@ -215,29 +195,10 @@ class CloudQueueTransportTest extends TestCase
         $this->expectExceptionMessage('exceeds the SQS maximum');
 
         // The caller asked for a one-hour delay; SQS can't honour it, so we must
-        // say so rather than silently deliver after 15 minutes.
+        // say so rather than silently deliver after 15 minutes. (Retry backoff is
+        // a separate path — the visibility timeout — and isn't bound by this cap.)
         $transport->send((new Envelope(new DummyMessage('in an hour')))
             ->with(new DelayStamp(3_600_000)));
-    }
-
-    public function testARetryBackoffBeyondFifteenMinutesIsClampedNotRejected(): void
-    {
-        $this->sqsMock->append(function (CommandInterface $cmd) {
-            $this->sqsCommands[] = $cmd->toArray();
-
-            return new Result(['MessageId' => 'id']);
-        });
-
-        $transport = $this->transport(useAgent: false);
-
-        // A retry re-sends with a RedeliveryStamp; its backoff is best-effort, so
-        // a value past the cap is clamped to 15 minutes rather than breaking the
-        // retry.
-        $transport->send((new Envelope(new DummyMessage('retry')))
-            ->with(new DelayStamp(3_600_000))
-            ->with(new RedeliveryStamp(2)));
-
-        $this->assertSame(900, $this->sqsCommands[0]['DelaySeconds']);
     }
 
     public function testGetFromQueuesReceivesFromTheNamedQueue(): void
@@ -364,6 +325,67 @@ class CloudQueueTransportTest extends TestCase
         $this->transport(useAgent: true)->reject($received);
 
         $this->assertSame('processed', json_decode((string) $this->agentRequests[0]['request']->getBody(), true)['status']);
+    }
+
+    public function testRejectReleasesToTheAgentWhenStampedForRetry(): void
+    {
+        $received = (new Envelope(new DummyMessage('x')))
+            ->with(new CloudQueueReceivedStamp('m-9', 'rh-9', self::QUEUE_URL, fromAgent: true))
+            ->with(new CloudReleaseStamp(30));
+
+        $this->agentMock->append(new Response(200));
+        $this->transport(useAgent: true)->reject($received);
+
+        // The agent does the visibility reset — we just report "released" + delay.
+        $body = json_decode((string) $this->agentRequests[0]['request']->getBody(), true);
+        $this->assertSame('released', $body['status']);
+        $this->assertSame(30, $body['delay']);
+    }
+
+    public function testRejectResetsVisibilityOnTheDirectPathWhenStampedForRetry(): void
+    {
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = $cmd->toArray();
+
+            return new Result([]);
+        });
+
+        $received = (new Envelope(new DummyMessage('x')))
+            ->with(new CloudQueueReceivedStamp('m-9', 'rh-9', self::QUEUE_URL, fromAgent: false))
+            ->with(new CloudReleaseStamp(45));
+
+        $this->transport(useAgent: false)->reject($received);
+
+        // No delete; a ChangeMessageVisibility resets the timeout to the backoff.
+        $cmd = $this->sqsCommands[0];
+        $this->assertSame('rh-9', $cmd['ReceiptHandle']);
+        $this->assertSame(self::QUEUE_URL, $cmd['QueueUrl']);
+        $this->assertSame(45, $cmd['VisibilityTimeout']);
+    }
+
+    public function testReceiveThreadsTheApproximateReceiveCountFromTheAgent(): void
+    {
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = $cmd->toArray();
+
+            return new Result(['MessageId' => 'id']);
+        });
+        $transport = $this->transport(useAgent: true);
+        $transport->send(new Envelope(new DummyMessage('again')));
+        $body = $this->sqsCommands[0]['MessageBody'];
+
+        $this->agentMock->append(new Response(200, [], json_encode([
+            'messageId' => 'm-2',
+            'receiptHandle' => 'rh-2',
+            'body' => $body,
+            'queueUrl' => self::QUEUE_URL,
+            'attributes' => ['ApproximateReceiveCount' => '3'],
+        ])));
+
+        $envelopes = [...$transport->get()];
+
+        // The SQS receive count (a string on the wire) becomes the attempt counter.
+        $this->assertSame(3, $envelopes[0]->last(CloudQueueReceivedStamp::class)?->approximateReceiveCount);
     }
 
     public function testItReceivesDirectlyFromSqsWhenTheAgentIsDisabled(): void
