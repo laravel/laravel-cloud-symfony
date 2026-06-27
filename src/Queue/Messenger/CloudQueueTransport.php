@@ -11,6 +11,7 @@ use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
+use Symfony\Component\Messenger\Transport\Receiver\QueueReceiverInterface;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
 use Symfony\Component\Uid\Uuid;
@@ -29,7 +30,7 @@ use Symfony\Component\Uid\Uuid;
  * transport does. (The agent's "released" outcome is reserved for SQS-native
  * redelivery, which Messenger's re-send retry model does not use.)
  */
-final class CloudQueueTransport implements TransportInterface, MessageCountAwareInterface
+final class CloudQueueTransport implements TransportInterface, QueueReceiverInterface, MessageCountAwareInterface
 {
     public function __construct(
         private readonly SqsClient $sqs,
@@ -43,6 +44,36 @@ final class CloudQueueTransport implements TransportInterface, MessageCountAware
     public function get(): iterable
     {
         return $this->useAgent ? $this->getFromAgent() : $this->getFromSqs();
+    }
+
+    /**
+     * Receive from specific managed queues by name — what
+     * `messenger:consume cloud --queues=critical` invokes.
+     *
+     * Inside a Laravel Cloud container the in-container agent is already pinned to
+     * a single managed queue, so it serves the correct queue regardless of the
+     * names requested here. The names take effect on the SQS-direct path (local
+     * dev), where each is resolved to {prefix}/{name}{suffix} and polled in turn.
+     *
+     * @param string[] $queueNames
+     *
+     * @return iterable<Envelope>
+     */
+    public function getFromQueues(array $queueNames, int $fetchSize = 1): iterable
+    {
+        if ($this->useAgent) {
+            return $this->getFromAgent();
+        }
+
+        foreach ($queueNames as $name) {
+            $messages = [...$this->getFromSqs($this->config->queueUrlFor($name))];
+
+            if ($messages !== []) {
+                return $messages;
+            }
+        }
+
+        return [];
     }
 
     public function ack(Envelope $envelope): void
@@ -68,12 +99,19 @@ final class CloudQueueTransport implements TransportInterface, MessageCountAware
 
     public function send(Envelope $envelope): Envelope
     {
-        if (! $this->config->isConfigured()) {
+        // A CloudQueueStamp routes to a named managed queue (the ->onQueue()
+        // equivalent); without one the message goes to the default queue.
+        $stamp = $envelope->last(CloudQueueStamp::class);
+        $queueUrl = $stamp instanceof CloudQueueStamp
+            ? $this->config->queueUrlFor($stamp->queue)
+            : $this->config->queueUrl;
+
+        if ($queueUrl === null) {
             throw new TransportException('No Laravel Cloud managed queue is configured (LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG is missing).');
         }
 
         $args = [
-            'QueueUrl' => $this->config->queueUrl,
+            'QueueUrl' => $queueUrl,
             'MessageBody' => $this->encode($envelope),
         ];
 
@@ -125,15 +163,17 @@ final class CloudQueueTransport implements TransportInterface, MessageCountAware
     /**
      * @return iterable<Envelope>
      */
-    private function getFromSqs(): iterable
+    private function getFromSqs(?string $queueUrl = null): iterable
     {
-        if (! $this->config->isConfigured()) {
+        $queueUrl ??= $this->config->queueUrl;
+
+        if ($queueUrl === null) {
             throw new TransportException('No Laravel Cloud managed queue is configured (LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG is missing).');
         }
 
         try {
             $result = $this->sqs->receiveMessage([
-                'QueueUrl' => $this->config->queueUrl,
+                'QueueUrl' => $queueUrl,
                 'MaxNumberOfMessages' => 1,
                 'WaitTimeSeconds' => 20,
                 'MessageAttributeNames' => ['All'],
@@ -152,7 +192,7 @@ final class CloudQueueTransport implements TransportInterface, MessageCountAware
             (string) ($message['Body'] ?? ''),
             (string) ($message['MessageId'] ?? ''),
             isset($message['ReceiptHandle']) ? (string) $message['ReceiptHandle'] : null,
-            (string) $this->config->queueUrl,
+            $queueUrl,
             fromAgent: false,
         )];
     }

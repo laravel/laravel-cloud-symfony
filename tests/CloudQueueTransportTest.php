@@ -14,6 +14,7 @@ use GuzzleHttp\Psr7\Response;
 use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
 use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueReceivedStamp;
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransport;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
@@ -67,6 +68,71 @@ class CloudQueueTransportTest extends TestCase
         // job (its display name is "typically its class").
         $this->assertSame(DummyMessage::class, $wrapper['displayName']);
         $this->assertNotEmpty($wrapper['uuid']);
+    }
+
+    public function testSendRoutesToANamedQueueWhenStamped(): void
+    {
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = $cmd->toArray();
+
+            return new Result(['MessageId' => 'id']);
+        });
+
+        $transport = $this->transport(useAgent: false);
+        $transport->send((new Envelope(new DummyMessage('urgent')))->with(new CloudQueueStamp('critical')));
+
+        $this->assertSame(
+            'https://sqs.us-east-2.amazonaws.com/036991040854/critical-env-x',
+            $this->sqsCommands[0]['QueueUrl'],
+        );
+    }
+
+    public function testGetFromQueuesReceivesFromTheNamedQueue(): void
+    {
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = $cmd->toArray();
+
+            return new Result(['MessageId' => 'id']);
+        });
+        $transport = $this->transport(useAgent: false);
+        $transport->send((new Envelope(new DummyMessage('crit')))->with(new CloudQueueStamp('critical')));
+        $body = $this->sqsCommands[0]['MessageBody'];
+
+        $this->sqsMock->append(function (CommandInterface $cmd) use ($body) {
+            $this->sqsCommands[] = $cmd->toArray();
+
+            return new Result(['Messages' => [[
+                'MessageId' => 'sqs-1',
+                'ReceiptHandle' => 'sqs-rh-1',
+                'Body' => $body,
+            ]]]);
+        });
+
+        $envelopes = [...$transport->getFromQueues(['critical'])];
+
+        $this->assertCount(1, $envelopes);
+        $this->assertEquals(new DummyMessage('crit'), $envelopes[0]->getMessage());
+        // It polled the critical queue, and the received stamp records it so the
+        // outcome is reported back to the same queue.
+        $this->assertSame(
+            'https://sqs.us-east-2.amazonaws.com/036991040854/critical-env-x',
+            end($this->sqsCommands)['QueueUrl'],
+        );
+        $this->assertSame(
+            'https://sqs.us-east-2.amazonaws.com/036991040854/critical-env-x',
+            $envelopes[0]->last(CloudQueueReceivedStamp::class)->queueUrl,
+        );
+    }
+
+    public function testGetFromQueuesUsesTheAgentRegardlessOfName(): void
+    {
+        // The in-container agent is pinned to one queue; --queues can't repoint it.
+        $this->agentMock->append(new Response(204));
+
+        $transport = $this->transport(useAgent: true);
+
+        $this->assertSame([], [...$transport->getFromQueues(['critical'])]);
+        $this->assertSame('/next', $this->agentRequests[0]['request']->getUri()->getPath());
     }
 
     public function testSendConvertsTheDelayStampToWholeSeconds(): void

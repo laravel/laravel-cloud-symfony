@@ -49,6 +49,38 @@ to SQS and received from the in-container agent; locally it transparently falls
 back to talking to SQS directly. Your jobs' throughput, duration and failures
 show up in the Laravel Cloud dashboard automatically.
 
+### Multiple queues
+
+A Laravel Cloud environment can have several managed queues (for example
+`default` and `critical`), each backed by its own SQS queue and its own isolated
+workers. Reference a queue by its **name** — the transport assembles the full SQS
+URL from the prefix and suffix Cloud injects — on both sides:
+
+**Dispatching** to a specific queue uses `CloudQueueStamp`, the equivalent of
+Laravel's `->onQueue('critical')`:
+
+```php
+use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueStamp;
+use Symfony\Component\Messenger\MessageBusInterface;
+
+$bus->dispatch(new ProcessReport($report), [new CloudQueueStamp('critical')]);
+```
+
+Without a stamp, a message goes to the environment's default managed queue. To
+route by message type without stamping at every call site, add a middleware that
+attaches the stamp based on the message class.
+
+**Processing** a specific queue uses Messenger's `--queues` option, the
+equivalent of Laravel's `queue:work --queue=critical`:
+
+```bash
+php bin/console messenger:consume cloud --queues=critical
+```
+
+On Laravel Cloud this is wired up for you: each managed queue gets its own
+isolated workers running this command for its own queue. The worker only ever
+processes the queue it was assigned.
+
 For local development where you'd rather process jobs inline without SQS,
 declare your own transport and route to it instead — the `cloud` transport is
 just a default, so an app-defined transport of the same name wins:

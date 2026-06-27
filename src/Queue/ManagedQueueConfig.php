@@ -70,6 +70,22 @@ final class ManagedQueueConfig
     }
 
     /**
+     * Build the full SQS queue URL for a logical managed-queue name, the same way
+     * Laravel's SqsQueue does: {prefix}/{queue}{suffix}. This is how a named queue
+     * (e.g. "critical") is resolved on both the dispatch path (the CloudQueueStamp
+     * target) and the receive path (`messenger:consume cloud --queues=critical`).
+     *
+     * Returns null when no prefix is configured (running locally with no managed
+     * queue), mirroring {@see $queueUrl} for the default queue.
+     */
+    public function queueUrlFor(string $queue): ?string
+    {
+        return $this->prefix !== ''
+            ? sprintf('%s/%s%s', $this->prefix, $queue, $this->suffix)
+            : null;
+    }
+
+    /**
      * Reduce a full SQS queue URL (or name) back to its logical queue name by
      * stripping the configured prefix and suffix — the same name the Laravel
      * Cloud dashboard groups metrics under.

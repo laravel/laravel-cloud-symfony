@@ -23,6 +23,25 @@ class ManagedQueueConfigTest extends TestCase
         $this->assertTrue($config->usesEcsCredentials());
     }
 
+    public function testQueueUrlForBuildsANamedQueueUrlFromPrefixAndSuffix(): void
+    {
+        $config = ManagedQueueConfig::fromEnvironment(self::SAMPLE, '/tmp/cloud-agent.sock');
+
+        $this->assertSame(
+            'https://sqs.us-east-2.amazonaws.com/036991040854/critical-env-a21e326b-405d-433e-a320-94a7e6b45dea',
+            $config->queueUrlFor('critical'),
+        );
+        // The default queue resolves to the same URL exposed as $queueUrl.
+        $this->assertSame($config->queueUrl, $config->queueUrlFor('default'));
+    }
+
+    public function testQueueUrlForIsNullWhenNoQueueIsConfigured(): void
+    {
+        $config = ManagedQueueConfig::fromEnvironment(null, null);
+
+        $this->assertNull($config->queueUrlFor('critical'));
+    }
+
     public function testItIsNotConfiguredWithoutAConnection(): void
     {
         $config = ManagedQueueConfig::fromEnvironment(null, null);
