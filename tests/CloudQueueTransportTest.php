@@ -87,6 +87,63 @@ class CloudQueueTransportTest extends TestCase
         );
     }
 
+    public function testSendToAFifoQueueSetsTheGroupAndDeduplicationIds(): void
+    {
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = $cmd->toArray();
+
+            return new Result(['MessageId' => 'id']);
+        });
+
+        $transport = $this->transport(useAgent: false);
+        $transport->send((new Envelope(new DummyMessage('ordered')))->with(new CloudQueueStamp('orders.fifo')));
+
+        $cmd = $this->sqsCommands[0];
+
+        // The ".fifo" marker survives suffixing at the very end of the URL.
+        $this->assertSame(
+            'https://sqs.us-east-2.amazonaws.com/036991040854/orders-env-x.fifo',
+            $cmd['QueueUrl'],
+        );
+        // SQS requires a group ID on FIFO queues; it defaults to the queue name.
+        $this->assertSame('orders.fifo', $cmd['MessageGroupId']);
+        // And a deduplication ID, which defaults to a unique (non-empty) value.
+        $this->assertNotEmpty($cmd['MessageDeduplicationId']);
+    }
+
+    public function testSendToAFifoQueueHonoursExplicitGroupAndDeduplicationIds(): void
+    {
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = $cmd->toArray();
+
+            return new Result(['MessageId' => 'id']);
+        });
+
+        $transport = $this->transport(useAgent: false);
+        $transport->send((new Envelope(new DummyMessage('ordered')))
+            ->with(new CloudQueueStamp('orders.fifo', messageGroupId: 'customer-7', deduplicationId: 'dedup-key')));
+
+        $this->assertSame('customer-7', $this->sqsCommands[0]['MessageGroupId']);
+        $this->assertSame('dedup-key', $this->sqsCommands[0]['MessageDeduplicationId']);
+    }
+
+    public function testSendToAFifoQueueIgnoresTheDelayStamp(): void
+    {
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = $cmd->toArray();
+
+            return new Result(['MessageId' => 'id']);
+        });
+
+        $transport = $this->transport(useAgent: false);
+        // FIFO queues reject per-message delivery delay, so it must not be sent.
+        $transport->send((new Envelope(new DummyMessage('ordered')))
+            ->with(new CloudQueueStamp('orders.fifo'))
+            ->with(new DelayStamp(5000)));
+
+        $this->assertArrayNotHasKey('DelaySeconds', $this->sqsCommands[0]);
+    }
+
     public function testGetFromQueuesReceivesFromTheNamedQueue(): void
     {
         $this->sqsMock->append(function (CommandInterface $cmd) {

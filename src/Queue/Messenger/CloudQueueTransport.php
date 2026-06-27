@@ -102,9 +102,8 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
         // A CloudQueueStamp routes to a named managed queue (the ->onQueue()
         // equivalent); without one the message goes to the default queue.
         $stamp = $envelope->last(CloudQueueStamp::class);
-        $queueUrl = $stamp instanceof CloudQueueStamp
-            ? $this->config->queueUrlFor($stamp->queue)
-            : $this->config->queueUrl;
+        $queue = $stamp instanceof CloudQueueStamp ? $stamp->queue : $this->config->queue;
+        $queueUrl = $this->config->queueUrlFor($queue);
 
         if ($queueUrl === null) {
             throw new TransportException('No Laravel Cloud managed queue is configured (LARAVEL_CLOUD_MANAGED_QUEUES_CONFIG is missing).');
@@ -115,7 +114,18 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
             'MessageBody' => $this->encode($envelope),
         ];
 
-        if (($delayStamp = $envelope->last(DelayStamp::class)) instanceof DelayStamp && $delayStamp->getDelay() > 0) {
+        // A ".fifo" queue name marks a FIFO queue, which SQS treats specially: it
+        // requires a message group ID, requires a deduplication ID (unless the
+        // queue has content-based deduplication enabled), and rejects the
+        // per-message delivery delay that standard queues allow.
+        if (str_ends_with($queue, '.fifo')) {
+            // Group ID defaults to the queue name (all of its messages ordered
+            // together); dedup ID defaults to a unique value so messages aren't
+            // dropped as duplicates. Both mirror Laravel's SqsQueue defaults and
+            // can be overridden via the CloudQueueStamp.
+            $args['MessageGroupId'] = $stamp?->messageGroupId ?? $queue;
+            $args['MessageDeduplicationId'] = $stamp?->deduplicationId ?? (string) Uuid::v7();
+        } elseif (($delayStamp = $envelope->last(DelayStamp::class)) instanceof DelayStamp && $delayStamp->getDelay() > 0) {
             // SQS delivery delay is whole seconds, capped at 15 minutes.
             $args['DelaySeconds'] = min(900, intdiv($delayStamp->getDelay(), 1000));
         }

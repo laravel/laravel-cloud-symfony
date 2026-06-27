@@ -90,6 +90,44 @@ class QueueEventSubscriberTest extends TestCase
         $this->assertSame('critical', $lines[0]['queue']);
     }
 
+    public function testTheQueuedEventReportsAFifoQueueByItsLogicalName(): void
+    {
+        $subscriber = $this->subscriber();
+
+        $event = new SendMessageToTransportsEvent(
+            new Envelope(new DummyMessage('hi'), [new CloudQueueStamp('orders.fifo')]),
+            ['cloud' => $this->cloudTransport()],
+        );
+
+        $lines = $this->capture(fn () => $subscriber->onSend($event));
+
+        $this->assertCount(1, $lines);
+        $this->assertSame('queued', $lines[0]['type']);
+        // The dashboard groups under the logical ".fifo" name, not a full URL.
+        $this->assertSame('orders.fifo', $lines[0]['queue']);
+    }
+
+    public function testWorkerEventsReportAFifoQueueByItsLogicalName(): void
+    {
+        $subscriber = $this->subscriber();
+
+        // The received stamp carries the real, fully suffixed FIFO queue URL the
+        // message came from; it must normalize back to "orders.fifo".
+        $fifoUrl = 'https://sqs.us-east-2.amazonaws.com/036991040854/orders-env-x.fifo';
+        $envelope = (new Envelope(new DummyMessage('work')))
+            ->with(new CloudQueueReceivedStamp('m-1', 'rh-1', $fifoUrl, fromAgent: true, body: 'raw-body'));
+        $received = new WorkerMessageReceivedEvent($envelope, 'cloud');
+
+        $lines = $this->capture(function () use ($subscriber, $received) {
+            $subscriber->onReceived($received);
+            $subscriber->onHandled(new WorkerMessageHandledEvent($received->getEnvelope(), 'cloud'));
+        });
+
+        $this->assertCount(2, $lines);
+        $this->assertSame('orders.fifo', $lines[0]['queue']);
+        $this->assertSame('orders.fifo', $lines[1]['queue']);
+    }
+
     public function testItIgnoresSendsToOtherTransports(): void
     {
         $subscriber = $this->subscriber();

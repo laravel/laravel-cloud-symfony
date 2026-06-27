@@ -42,6 +42,48 @@ class ManagedQueueConfigTest extends TestCase
         $this->assertNull($config->queueUrlFor('critical'));
     }
 
+    public function testQueueUrlForKeepsTheFifoMarkerAfterTheSuffix(): void
+    {
+        $config = ManagedQueueConfig::fromEnvironment(self::SAMPLE, '/tmp/cloud-agent.sock');
+
+        // The per-environment suffix is inserted before ".fifo", not after it —
+        // {prefix}/{base}{suffix}.fifo — matching Laravel's SqsQueue::suffixQueue.
+        $this->assertSame(
+            'https://sqs.us-east-2.amazonaws.com/036991040854/orders-env-a21e326b-405d-433e-a320-94a7e6b45dea.fifo',
+            $config->queueUrlFor('orders.fifo'),
+        );
+    }
+
+    public function testTheDefaultQueueUrlIsAlsoFifoAware(): void
+    {
+        $json = '{"connection":{"prefix":"https://sqs.us-east-2.amazonaws.com/036991040854","suffix":"-env-x","queue":"default.fifo","region":"us-east-2"}}';
+
+        $config = ManagedQueueConfig::fromEnvironment($json, null);
+
+        $this->assertSame(
+            'https://sqs.us-east-2.amazonaws.com/036991040854/default-env-x.fifo',
+            $config->queueUrl,
+        );
+    }
+
+    public function testNormalizeQueueRoundTripsAFifoQueueUrl(): void
+    {
+        $config = ManagedQueueConfig::fromEnvironment(self::SAMPLE, '/tmp/cloud-agent.sock');
+
+        // The full FIFO URL we build normalizes back to the logical ".fifo" name
+        // the dashboard groups metrics under — the inverse of queueUrlFor().
+        $url = $config->queueUrlFor('orders.fifo');
+
+        $this->assertSame('orders.fifo', $config->normalizeQueue($url));
+    }
+
+    public function testNormalizeQueueStripsTheSuffixFromAStandardQueueUrl(): void
+    {
+        $config = ManagedQueueConfig::fromEnvironment(self::SAMPLE, '/tmp/cloud-agent.sock');
+
+        $this->assertSame('critical', $config->normalizeQueue($config->queueUrlFor('critical')));
+    }
+
     public function testItIsNotConfiguredWithoutAConnection(): void
     {
         $config = ManagedQueueConfig::fromEnvironment(null, null);

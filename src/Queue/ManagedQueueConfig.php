@@ -52,14 +52,14 @@ final class ManagedQueueConfig
         $connection = is_array($data['connection'] ?? null) ? $data['connection'] : [];
 
         // The agent message reports the real queue URL it came from, but for
-        // pushing we build it the same way Laravel's SqsQueue does:
-        // {prefix}/{queue}{suffix}.
+        // pushing we build it the same way Laravel's SqsQueue does — see
+        // {@see buildQueueUrl} for the (FIFO-aware) suffixing rules.
         $prefix = rtrim((string) ($connection['prefix'] ?? ''), '/');
         $queue = (string) ($connection['queue'] ?? $data['queue'] ?? 'default');
         $suffix = (string) ($connection['suffix'] ?? '');
 
         return new self(
-            queueUrl: $prefix !== '' ? sprintf('%s/%s%s', $prefix, $queue, $suffix) : null,
+            queueUrl: self::buildQueueUrl($prefix, $queue, $suffix),
             region: isset($connection['region']) ? (string) $connection['region'] : null,
             credentials: (string) ($connection['credentials'] ?? 'default'),
             queue: $queue,
@@ -70,19 +70,43 @@ final class ManagedQueueConfig
     }
 
     /**
-     * Build the full SQS queue URL for a logical managed-queue name, the same way
-     * Laravel's SqsQueue does: {prefix}/{queue}{suffix}. This is how a named queue
-     * (e.g. "critical") is resolved on both the dispatch path (the CloudQueueStamp
-     * target) and the receive path (`messenger:consume cloud --queues=critical`).
+     * Build the full SQS queue URL for a logical managed-queue name. This is how a
+     * named queue (e.g. "critical") is resolved on both the dispatch path (the
+     * CloudQueueStamp target) and the receive path
+     * (`messenger:consume cloud --queues=critical`).
      *
      * Returns null when no prefix is configured (running locally with no managed
      * queue), mirroring {@see $queueUrl} for the default queue.
      */
     public function queueUrlFor(string $queue): ?string
     {
-        return $this->prefix !== ''
-            ? sprintf('%s/%s%s', $this->prefix, $queue, $this->suffix)
-            : null;
+        return self::buildQueueUrl($this->prefix, $queue, $this->suffix);
+    }
+
+    /**
+     * Assemble a queue URL the same way Laravel's SqsQueue::suffixQueue does.
+     *
+     * For a standard queue this is simply {prefix}/{queue}{suffix}. A FIFO queue
+     * name must keep its ".fifo" marker at the very end, so the per-environment
+     * suffix is inserted *before* it — {prefix}/{base}{suffix}.fifo — not naively
+     * appended after it ({prefix}/{base}.fifo{suffix}), which would point at a
+     * queue that doesn't exist. This is the inverse of {@see normalizeQueue}.
+     *
+     * Returns null when no prefix is configured (running locally, no managed queue).
+     */
+    private static function buildQueueUrl(string $prefix, string $queue, string $suffix): ?string
+    {
+        if ($prefix === '') {
+            return null;
+        }
+
+        if (str_ends_with($queue, '.fifo')) {
+            $base = substr($queue, 0, -strlen('.fifo'));
+
+            return sprintf('%s/%s%s.fifo', $prefix, $base, $suffix);
+        }
+
+        return sprintf('%s/%s%s', $prefix, $queue, $suffix);
     }
 
     /**
