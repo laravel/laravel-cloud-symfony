@@ -16,13 +16,15 @@ use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudFifoStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudMessageGroupStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueReceivedStamp;
-use Laravel\Cloud\Symfony\Queue\Messenger\CloudReleaseStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueStamp;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransport;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
+use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
+use Symfony\Component\Messenger\Stamp\SentForRetryStamp;
+use Symfony\Component\Messenger\Stamp\SentToFailureTransportStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
@@ -327,40 +329,142 @@ class CloudQueueTransportTest extends TestCase
         $this->assertSame('processed', json_decode((string) $this->agentRequests[0]['request']->getBody(), true)['status']);
     }
 
-    public function testRejectReleasesToTheAgentWhenStampedForRetry(): void
+    public function testSendReleasesToTheAgentForARetryReSend(): void
     {
-        $received = (new Envelope(new DummyMessage('x')))
+        // A RedeliveryStamp marks Messenger's re-send. The transport doesn't push a
+        // duplicate: it reports "released" + the strategy's backoff (carried on the
+        // DelayStamp) so the agent resets the original message's visibility.
+        $reSend = (new Envelope(new DummyMessage('x')))
             ->with(new CloudQueueReceivedStamp('m-9', 'rh-9', self::QUEUE_URL, fromAgent: true))
-            ->with(new CloudReleaseStamp(30));
+            ->with(new RedeliveryStamp(1))
+            ->with(new DelayStamp(2000));
 
         $this->agentMock->append(new Response(200));
-        $this->transport(useAgent: true)->reject($received);
+        $returned = $this->transport(useAgent: true)->send($reSend);
 
-        // The agent does the visibility reset — we just report "released" + delay.
+        $this->assertSame($reSend, $returned);
         $body = json_decode((string) $this->agentRequests[0]['request']->getBody(), true);
         $this->assertSame('released', $body['status']);
-        $this->assertSame(30, $body['delay']);
+        $this->assertSame(2, $body['delay']); // 2000ms → 2s
     }
 
-    public function testRejectResetsVisibilityOnTheDirectPathWhenStampedForRetry(): void
+    public function testSendResetsVisibilityOnTheDirectPathForARetryReSend(): void
     {
         $this->sqsMock->append(function (CommandInterface $cmd) {
-            $this->sqsCommands[] = $cmd->toArray();
+            $this->sqsCommands[] = ['@action' => $cmd->getName()] + $cmd->toArray();
 
             return new Result([]);
         });
 
-        $received = (new Envelope(new DummyMessage('x')))
+        $reSend = (new Envelope(new DummyMessage('x')))
             ->with(new CloudQueueReceivedStamp('m-9', 'rh-9', self::QUEUE_URL, fromAgent: false))
-            ->with(new CloudReleaseStamp(45));
+            ->with(new RedeliveryStamp(2))
+            ->with(new DelayStamp(4000));
 
-        $this->transport(useAgent: false)->reject($received);
+        $this->transport(useAgent: false)->send($reSend);
 
-        // No delete; a ChangeMessageVisibility resets the timeout to the backoff.
+        // No new message is pushed; a ChangeMessageVisibility resets the original's
+        // timeout to the backoff the strategy left on the DelayStamp (4000ms → 4s).
         $cmd = $this->sqsCommands[0];
+        $this->assertSame('ChangeMessageVisibility', $cmd['@action']);
         $this->assertSame('rh-9', $cmd['ReceiptHandle']);
         $this->assertSame(self::QUEUE_URL, $cmd['QueueUrl']);
-        $this->assertSame(45, $cmd['VisibilityTimeout']);
+        $this->assertSame(4, $cmd['VisibilityTimeout']);
+    }
+
+    public function testSendIgnoresARedeliveryStampWithoutAReceivedStamp(): void
+    {
+        // A RedeliveryStamp alone does NOT mark a retry re-send: a job replayed
+        // from a failure transport (messenger:failed:retry) carries a serialized
+        // RedeliveryStamp but has lost its non-sendable CloudQueueReceivedStamp, so
+        // there is no original message to release. It must be pushed as a fresh
+        // message — not routed into release(), which would throw for want of SQS
+        // coordinates.
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = ['@action' => $cmd->getName()] + $cmd->toArray();
+
+            return new Result(['MessageId' => 'sqs-message-id']);
+        });
+
+        $transport = $this->transport(useAgent: false);
+        $envelope = $transport->send((new Envelope(new DummyMessage('replayed')))->with(new RedeliveryStamp(2)));
+
+        // A normal SendMessage, not a ChangeMessageVisibility release.
+        $this->assertSame('SendMessage', $this->sqsCommands[0]['@action']);
+        $this->assertSame('sqs-message-id', $envelope->last(TransportMessageIdStamp::class)?->getId());
+    }
+
+    public function testSendPushesAFailedJobToAManagedFailureTransportRatherThanReleasing(): void
+    {
+        // On a terminal failure SendFailedMessageToFailureTransportListener re-sends
+        // the in-worker envelope — which still carries our non-sendable
+        // CloudQueueReceivedStamp — to the failure transport, stamping it with a
+        // fresh RedeliveryStamp(0), a DelayStamp(0) and a SentToFailureTransportStamp.
+        // If that failure transport is itself a managed queue, this must NOT be
+        // mistaken for a retry re-send (that would reset the original's visibility
+        // and silently drop the failed job). The retry count of 0 — not the
+        // SentToFailureTransportStamp — is what marks it: a real retry re-send always
+        // carries a count >= 1, so send() pushes this as a real message.
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = ['@action' => $cmd->getName()] + $cmd->toArray();
+
+            return new Result(['MessageId' => 'failed-job-id']);
+        });
+
+        $failed = (new Envelope(new DummyMessage('terminal')))
+            ->with(new CloudQueueReceivedStamp('m-9', 'rh-9', self::QUEUE_URL, fromAgent: false))
+            ->with(new RedeliveryStamp(0))
+            ->with(new DelayStamp(0))
+            ->with(new SentToFailureTransportStamp('cloud'));
+
+        $envelope = $this->transport(useAgent: false)->send($failed);
+
+        // A real SendMessage to the failure queue, not a ChangeMessageVisibility
+        // release of the original.
+        $this->assertSame('SendMessage', $this->sqsCommands[0]['@action']);
+        $this->assertSame('failed-job-id', $envelope->last(TransportMessageIdStamp::class)?->getId());
+    }
+
+    public function testSendStillReleasesARetryThatCarriesAStaleFailureTransportStamp(): void
+    {
+        // SentToFailureTransportStamp is *sendable*, so once a job has been through
+        // the failure transport and been replayed (messenger:failed:retry), it rides
+        // along on every later delivery. A genuine retry of such a job therefore
+        // reaches send() carrying BOTH a CloudQueueReceivedStamp and that stamp — but
+        // its retry count is back to >= 1, so it must still be released (not pushed
+        // as a duplicate). This is why send() keys on the retry count, not on the
+        // presence of the SentToFailureTransportStamp.
+        $this->sqsMock->append(function (CommandInterface $cmd) {
+            $this->sqsCommands[] = ['@action' => $cmd->getName()] + $cmd->toArray();
+
+            return new Result([]);
+        });
+
+        $reSend = (new Envelope(new DummyMessage('x')))
+            ->with(new CloudQueueReceivedStamp('m-9', 'rh-9', self::QUEUE_URL, fromAgent: false))
+            ->with(new SentToFailureTransportStamp('cloud')) // stale, from a prior failure cycle
+            ->with(new RedeliveryStamp(2))
+            ->with(new DelayStamp(4000));
+
+        $this->transport(useAgent: false)->send($reSend);
+
+        // A visibility reset of the original, not a duplicate SendMessage.
+        $this->assertSame('ChangeMessageVisibility', $this->sqsCommands[0]['@action']);
+        $this->assertSame(4, $this->sqsCommands[0]['VisibilityTimeout']);
+    }
+
+    public function testRejectIsANoOpWhenMessengerMarkedTheMessageForRetry(): void
+    {
+        // The retry release already happened in send(); the worker's follow-up
+        // reject() on the original must do nothing — no delete, no agent call.
+        $received = (new Envelope(new DummyMessage('x')))
+            ->with(new CloudQueueReceivedStamp('m-9', 'rh-9', self::QUEUE_URL, fromAgent: true))
+            ->with(new SentForRetryStamp(true));
+
+        $this->transport(useAgent: true)->reject($received);
+
+        $this->assertSame([], $this->agentRequests);
+        $this->assertSame([], $this->sqsCommands);
     }
 
     public function testReceiveThreadsTheApproximateReceiveCountFromTheAgent(): void

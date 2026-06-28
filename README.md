@@ -180,25 +180,30 @@ SQS's **12-hour** visibility ceiling (not the 15-minute send cap), and it works
 unchanged on FIFO queues. On Cloud the in-container agent performs the release;
 locally it's a direct `ChangeMessageVisibility`.
 
-Symfony Messenger's own re-send retry is therefore turned off for the `cloud`
-transport — this package owns retries. The attempt count comes from SQS's
-`ApproximateReceiveCount`, and an `UnrecoverableExceptionInterface` (or a handler
-failure wrapping one) skips straight to failure, just like Messenger.
-
-Tune it under `laravel_cloud.queue.retry` (defaults shown):
+This is driven by **Symfony Messenger's own retry strategy** — there's no separate
+config to learn. Under the hood the transport bridges SQS's `ApproximateReceiveCount`
+into the retry counter Messenger expects, so the standard `retry_strategy` is fully
+respected (including its `UnrecoverableExceptionInterface` handling — an unrecoverable
+error, or a handler failure wrapping one, skips straight to failure). Tune it on the
+`cloud` transport like any other Messenger transport:
 
 ```yaml
-# config/packages/laravel_cloud.yaml
-laravel_cloud:
-    queue:
-        retry:
-            max_attempts: 3      # total deliveries before a job is failed
-            base_delay: 1000     # first backoff, in milliseconds
-            multiplier: 2        # backoff multiplier per attempt
-            max_delay: 0         # backoff ceiling in ms; 0 = none (SQS still caps at 12h)
+# config/packages/messenger.yaml
+framework:
+    messenger:
+        transports:
+            cloud:
+                retry_strategy:
+                    max_retries: 3   # 3 retries → 4 total deliveries
+                    delay: 1000      # first backoff, in milliseconds
+                    multiplier: 2    # backoff multiplier per attempt
+                    max_delay: 0     # backoff ceiling in ms; 0 = none (SQS still caps at 12h)
 ```
 
-A job that exhausts its attempts (or throws an unrecoverable exception) is deleted
+(You only add the `retry_strategy` — the `dsn` comes from the ready-made `cloud`
+transport. Omit the block entirely to use Messenger's defaults: 3 retries.)
+
+A job that exhausts its retries (or throws an unrecoverable exception) is deleted
 and recorded as a failed job, surfacing in the Laravel Cloud dashboard.
 
 ### Local development

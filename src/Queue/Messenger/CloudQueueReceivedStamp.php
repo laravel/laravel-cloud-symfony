@@ -14,9 +14,10 @@ use Symfony\Component\Messenger\Stamp\NonSendableStampInterface;
  * exactly as Laravel logs the raw payload for a failed job.
  *
  * $approximateReceiveCount carries SQS's ApproximateReceiveCount — how many times
- * this message has been delivered — which CloudRetrySubscriber uses as the
- * attempt counter when deciding whether to release for retry or fail, the same
- * source as Laravel's SqsJob::attempts().
+ * this message has been delivered. The transport reconstructs a RedeliveryStamp
+ * from it on receive so Messenger's stock retry strategy can count attempts, and
+ * the failed-job event reports it directly — the same source as Laravel's
+ * SqsJob::attempts().
  */
 final class CloudQueueReceivedStamp implements NonSendableStampInterface
 {

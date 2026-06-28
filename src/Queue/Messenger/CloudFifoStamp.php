@@ -23,9 +23,12 @@ use Symfony\Component\Messenger\Stamp\NonSendableStampInterface;
  * across transports. Only meaningful on a FIFO queue: the transport rejects this
  * stamp on a standard queue rather than silently ignoring it.
  *
- * Non-sendable on purpose: when Messenger retries by re-sending a copy, the
- * retry recomputes its FIFO attributes (notably a fresh deduplication ID) rather
- * than carrying a stale deduplication ID that SQS could drop as a duplicate.
+ * Non-sendable on purpose: it is dispatch-time metadata that send() translates
+ * into SQS MessageGroupId / MessageDeduplicationId, not data the message needs to
+ * carry onward. Retries are SQS-native redeliveries of the original message (a
+ * visibility reset, never a re-sent copy), so SQS keeps the original group and
+ * deduplication ID itself — there is nothing to recompute and no stale dedup ID
+ * to serialize that SQS could later drop as a duplicate.
  */
 final class CloudFifoStamp implements NonSendableStampInterface
 {

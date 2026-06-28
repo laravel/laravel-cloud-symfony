@@ -48,9 +48,10 @@ class LaravelCloudBundleTest extends TestCase
         $transports = $this->prependedMessengerTransports();
 
         $this->assertSame('laravel-cloud://managed-queue', $transports['cloud']['dsn'] ?? null);
-        // Messenger's re-send retry is off; CloudRetrySubscriber owns retries via
-        // SQS-native redelivery instead.
-        $this->assertSame(0, $transports['cloud']['retry_strategy']['max_retries'] ?? null);
+        // No retry_strategy override is prepended: retries ride Messenger's stock
+        // strategy (the transport bridges SQS's receive count into a
+        // RedeliveryStamp), so the standard retry_strategy config is honoured.
+        $this->assertArrayNotHasKey('retry_strategy', $transports['cloud']);
     }
 
     public function testItDoesNotPrependTheCloudTransportWhenTheQueueFeatureIsDisabled(): void

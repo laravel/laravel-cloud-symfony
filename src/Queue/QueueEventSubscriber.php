@@ -177,10 +177,10 @@ final class QueueEventSubscriber implements EventSubscriberInterface
             'queue' => $queue,
             'started_at' => $startedAt->format('Y-m-d H:i:s.u'),
             // The attempt count is SQS's ApproximateReceiveCount (mirroring
-            // Laravel's SqsJob::attempts()), threaded onto the received stamp.
-            // This transport disables Messenger's re-send retry and releases via
-            // SQS-native redelivery, so no RedeliveryStamp is ever attached —
-            // reading one here would always report 1.
+            // Laravel's SqsJob::attempts()), threaded onto the received stamp —
+            // the true delivery count. (The transport also reconstructs a
+            // RedeliveryStamp from it so Messenger's retry strategy can count, but
+            // that is derived from this same number, so we read the source here.)
             'attempts' => $received?->approximateReceiveCount ?? 1,
             'payload' => $this->trimPayload($received?->body ?? ''),
             'exception' => $this->truncate($exception, self::MAX_EXCEPTION_BYTES),
@@ -191,8 +191,8 @@ final class QueueEventSubscriber implements EventSubscriberInterface
      * Shrink the failed-job payload so the event stays under the collector's
      * CRI line limit. The job's identifying metadata (uuid, displayName) is
      * preserved so the dashboard can still name the job; the bulky serialized
-     * body — which balloons with an ErrorDetailsStamp stack trace baked in on
-     * every retry — is truncated.
+     * body — the raw message payload captured on receive, which can be large on
+     * its own — is truncated.
      *
      * Truncating the body means a retried job cannot be fully reconstructed
      * from this payload; that is an acceptable trade-off for the workaround and

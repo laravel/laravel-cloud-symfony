@@ -9,6 +9,8 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
 use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
+use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
+use Symfony\Component\Messenger\Stamp\SentForRetryStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Messenger\Transport\Receiver\QueueReceiverInterface;
@@ -23,14 +25,15 @@ use Symfony\Component\Uid\Uuid;
  * cloud-agent (GET /next) when its socket is present; otherwise — running
  * locally with no agent — it falls back to receiving from SQS directly.
  *
- * Acknowledgement maps to the agent's "processed" outcome (it deletes the SQS
- * message). Rejection branches on whether the failure is retryable: when
- * CloudRetrySubscriber has stamped a CloudReleaseStamp, reject() releases the
- * message back to SQS for native redelivery (the agent's "released" outcome / a
- * visibility reset) after the backoff — exactly like Laravel's $job->release().
- * Otherwise the failure is terminal and reject() deletes the message, same as
- * ack(). Messenger's own re-send retry is disabled for this transport (see
- * QueueFeature), so retries never re-enter send().
+ * Retries stay entirely Messenger-native. decode() reconstructs a RedeliveryStamp
+ * from SQS's ApproximateReceiveCount, so the stock MultiplierRetryStrategy (and
+ * the standard retry_strategy config) counts and backs off as usual. When the
+ * listener decides to retry it re-sends the message; send() intercepts that
+ * re-send and turns it into a visibility reset on the *original* (the agent's
+ * "released" outcome / ChangeMessageVisibility) after the strategy's backoff —
+ * Laravel's $job->release($delay) — so no duplicate is ever created. reject()
+ * then deletes only the terminal failures (those the listener did not re-send),
+ * the same outcome as ack().
  */
 final class CloudQueueTransport implements TransportInterface, QueueReceiverInterface, MessageCountAwareInterface
 {
@@ -93,14 +96,16 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
 
     public function reject(Envelope $envelope): void
     {
-        // A CloudReleaseStamp means CloudRetrySubscriber judged this failure
-        // retryable, so the message is released back to SQS for native
-        // redelivery (visibility reset) rather than deleted — Laravel's
-        // $job->release($delay). Without it the failure is terminal: remove the
-        // message, same outcome as ack().
-        if (($release = $envelope->last(CloudReleaseStamp::class)) instanceof CloudReleaseStamp) {
-            $this->release($envelope, $release->delaySeconds);
+        // A retryable failure has already been released back to SQS by send():
+        // Messenger retries by re-sending, and we turn that re-send into a
+        // visibility reset (see send()). Messenger's retry listener records its
+        // verdict on the SentForRetryStamp, so when it says the message was sent
+        // for retry the release is already done and reject() has nothing left to
+        // do. A terminal failure was never re-sent, so we delete it — the same
+        // outcome as ack().
+        $sent = $envelope->last(SentForRetryStamp::class);
 
+        if ($sent instanceof SentForRetryStamp && $sent->isSent) {
             return;
         }
 
@@ -109,6 +114,64 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
 
     public function send(Envelope $envelope): Envelope
     {
+        // Messenger retries by re-sending the failed message with a
+        // RedeliveryStamp. This transport doesn't create a duplicate: it releases
+        // the *original* message back to SQS for native redelivery — a visibility
+        // reset (or the agent's "released" outcome) after the backoff the retry
+        // strategy computed and left on the DelayStamp. That is the SQS-native
+        // equivalent of Laravel's $job->release($delay), and the same interception
+        // symfony/amazon-sqs-messenger makes in its delete_on_rejection: false
+        // mode — except we honour the strategy's per-attempt backoff rather than a
+        // single fixed delay.
+        //
+        // Two conditions pin this to a genuine retry re-send, so nothing that
+        // merely resembles one gets released by mistake:
+        //
+        //  - a RedeliveryStamp whose retry count is >= 1. Messenger's retry listener
+        //    *increments* the count and re-sends, so a real retry always carries a
+        //    positive count. A count of 0 is NOT a retry: it is a never-retried
+        //    message, or — crucially — the copy SendFailedMessageToFailureTransport-
+        //    Listener sends to the failure transport on a *terminal* failure, which
+        //    it stamps with a fresh RedeliveryStamp(0). Were that failure transport
+        //    itself a managed queue, releasing here rather than pushing would reset
+        //    the original's visibility and silently lose the failed job; the count-0
+        //    test lets it fall through to a real push. (We read the count rather
+        //    than testing for a SentToFailureTransportStamp because that stamp is
+        //    *sendable*: it survives a `messenger:failed:retry` replay and rides
+        //    along on every later delivery, so a genuine retry of a once-failed job
+        //    still carries it — but its retry count is back to >= 1, which keeps
+        //    that case correct.)
+        //  - the (non-sendable) CloudQueueReceivedStamp means this is the in-worker
+        //    envelope of a message we received, so it still carries the original's
+        //    SQS coordinates to release against. A RedeliveryStamp WITHOUT one is a
+        //    `messenger:failed:retry` replay restored from a failure transport, or a
+        //    caller dispatching a stray RedeliveryStamp — there is no original we
+        //    hold, so it must be pushed fresh rather than failing in release() for
+        //    want of coordinates.
+        if (RedeliveryStamp::getRetryCountFromEnvelope($envelope) >= 1
+            && $envelope->last(CloudQueueReceivedStamp::class) instanceof CloudQueueReceivedStamp) {
+            $delay = $envelope->last(DelayStamp::class);
+            $milliseconds = $delay instanceof DelayStamp ? max(0, $delay->getDelay()) : 0;
+
+            // SQS visibility timeouts are whole seconds, so round the millisecond
+            // backoff UP. Truncating a sub-second delay to 0 would release with a
+            // 0-second timeout — immediate redelivery with no backoff — turning the
+            // backoff into a hot retry loop. The stock strategy's default 0.1
+            // jitter can pull the first retry below 1s, and a configured sub-second
+            // delay collapses every early retry, so flooring is unsafe. (A backoff
+            // of exactly 0 — an explicit retry_strategy delay of 0, or a
+            // RecoverableExceptionInterface requesting 0 — still releases with a
+            // 0-second timeout: that is the caller deliberately asking for no
+            // backoff, not a rounding artefact, and the attempt is still bounded by
+            // max_retries.) Then clamp to SQS's 12-hour visibility ceiling: a
+            // mandatory backstop, since the strategy's max_delay defaults to
+            // unbounded and could exceed 12h (it never overrides a valid max_delay,
+            // only what it left above).
+            $this->release($envelope, min(43_200, (int) ceil($milliseconds / 1000)));
+
+            return $envelope;
+        }
+
         // A CloudQueueStamp routes to a named managed queue (the ->onQueue()
         // equivalent); without one the message goes to the default queue.
         $stamp = $envelope->last(CloudQueueStamp::class);
@@ -145,8 +208,9 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
 
             // FIFO queues don't support a per-message delay at all (only a
             // queue-level one), so fail loudly rather than delivering it
-            // immediately behind the caller's back. (Retry backoff doesn't come
-            // through here — it uses the visibility timeout; see CloudReleaseStamp.)
+            // immediately behind the caller's back. (A retry re-send never reaches
+            // here — it's intercepted at the top of send() and released via the
+            // visibility timeout, which FIFO queues do support.)
             if (($delayStamp = $envelope->last(DelayStamp::class)) instanceof DelayStamp && $delayStamp->getDelay() > 0) {
                 throw new TransportException(sprintf('The FIFO queue "%s" does not support a per-message delay; remove the DelayStamp or dispatch to a standard queue.', $queue));
             }
@@ -171,8 +235,9 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
                 // minutes. A longer delay is unsatisfiable, so fail loudly rather
                 // than silently delivering after 15 minutes (a job that must run
                 // in an hour is a bug if it runs in 15 minutes instead). This is a
-                // dispatch delay only — retry backoff uses the visibility timeout
-                // (see CloudReleaseStamp), never send().
+                // fresh-dispatch delay only — a retry re-send is intercepted at the
+                // top of send() and released via the visibility timeout, so it
+                // never reaches this validation.
                 $seconds = intdiv($delayStamp->getDelay(), 1000);
 
                 if ($seconds > 900) {
@@ -314,7 +379,15 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
 
         return $envelope
             ->with($stamp)
-            ->with(new TransportMessageIdStamp($messageId));
+            ->with(new TransportMessageIdStamp($messageId))
+            // Bridge SQS's delivery counter into the stamp Messenger's stock retry
+            // strategy expects. Normally a RedeliveryStamp rides a re-sent copy;
+            // we don't re-send, so the redelivered message arrives without one and
+            // the strategy would read a retry count of 0 forever. Reconstructing it
+            // from ApproximateReceiveCount (received #N → N-1 prior retries) lets
+            // the unmodified MultiplierRetryStrategy — and the standard
+            // retry_strategy config — count, decide and back off correctly.
+            ->with(new RedeliveryStamp(max(0, $receiveCount - 1)));
     }
 
     private function encode(Envelope $envelope): string

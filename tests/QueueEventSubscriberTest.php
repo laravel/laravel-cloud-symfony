@@ -11,11 +11,16 @@ use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransport;
 use Laravel\Cloud\Symfony\Observability\Events;
 use Laravel\Cloud\Symfony\Queue\QueueEventSubscriber;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\SendMessageToTransportsEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageHandledEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageReceivedEvent;
+use Symfony\Component\Messenger\EventListener\SendFailedMessageForRetryListener;
+use Symfony\Component\Messenger\Retry\MultiplierRetryStrategy;
+use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
+use Symfony\Component\Messenger\Transport\Sender\SenderInterface;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 
 /**
@@ -168,7 +173,8 @@ class QueueEventSubscriberTest extends TestCase
         $subscriber = $this->subscriber();
 
         // Failed on its 3rd SQS delivery: the failed_job attempt count comes from
-        // ApproximateReceiveCount (no RedeliveryStamp exists under SQS-native retry).
+        // ApproximateReceiveCount (the true delivery count, which the transport
+        // also bridges into a RedeliveryStamp for the retry strategy).
         $received = new WorkerMessageReceivedEvent($this->managedEnvelope(receiveCount: 3), 'cloud');
 
         $lines = $this->capture(function () use ($subscriber, $received) {
@@ -208,7 +214,7 @@ class QueueEventSubscriberTest extends TestCase
             $subscriber->onReceived($received);
 
             $failed = new WorkerMessageFailedEvent($received->getEnvelope(), 'cloud', new \RuntimeException('again'));
-            // CloudRetrySubscriber would set this; here we drive it directly.
+            // Messenger's retry listener would set this; here we drive it directly.
             $failed->setForRetry();
             $subscriber->onFailed($failed);
         });
@@ -225,6 +231,69 @@ class QueueEventSubscriberTest extends TestCase
         $event = new WorkerMessageReceivedEvent(new Envelope(new DummyMessage('x')), 'other');
 
         $this->assertSame([], $this->capture(fn () => $subscriber->onReceived($event)));
+    }
+
+    public function testEndToEndTheRealRetryListenerDrivesTheFailedJobDecision(): void
+    {
+        // Wire the *real* Symfony retry listener (priority 100) and our subscriber
+        // (priority -100) onto one dispatcher, the way the framework does. This
+        // proves willRetry() flows from the stock strategy to our observability
+        // exactly as before, now that CloudRetrySubscriber is gone.
+        $strategy = new MultiplierRetryStrategy(maxRetries: 3, delayMilliseconds: 1000, multiplier: 2.0, maxDelayMilliseconds: 0, jitter: 0.0);
+
+        // A retry attempt re-sends; the listener only needs *a* sender, and we
+        // don't want the transport's release side effect in an observability test,
+        // so a no-op sender stands in.
+        $sender = new class implements SenderInterface {
+            public function send(Envelope $envelope): Envelope
+            {
+                return $envelope;
+            }
+        };
+
+        $retryListener = new SendFailedMessageForRetryListener(
+            $this->locator(['cloud' => $sender]),
+            $this->locator(['cloud' => $strategy]),
+        );
+
+        $dispatch = function (int $receiveCount) use ($retryListener): array {
+            $dispatcher = new EventDispatcher();
+            $dispatcher->addListener(WorkerMessageFailedEvent::class, $retryListener->onMessageFailed(...), 100);
+            $dispatcher->addListener(WorkerMessageFailedEvent::class, $this->subscriber()->onFailed(...), -100);
+
+            // Mirror decode(): the received stamp + the RedeliveryStamp bridged
+            // from ApproximateReceiveCount, which is what lets the stock strategy
+            // reach its verdict.
+            $envelope = $this->managedEnvelope($receiveCount)
+                ->with(new RedeliveryStamp(max(0, $receiveCount - 1)));
+
+            return $this->capture(fn () => $dispatcher->dispatch(
+                new WorkerMessageFailedEvent($envelope, 'cloud', new \RuntimeException('boom')),
+            ));
+        };
+
+        // 2nd delivery (max_retries 3) → still retryable → "released", no failed_job.
+        $retry = $dispatch(2);
+        $this->assertSame(['released'], array_column($retry, 'type'));
+        $this->assertNotContains('failed_job', array_column($retry, '_cloud_event'));
+
+        // 4th delivery → strategy is exhausted → "failed" + a recorded failed_job.
+        $terminal = $dispatch(4);
+        $this->assertSame('failed', $terminal[0]['type']);
+        $this->assertSame('failed_job', $terminal[1]['_cloud_event']);
+        $this->assertSame(4, $terminal[1]['attempts']);
+        $this->assertStringContainsString('boom', $terminal[1]['exception']);
+    }
+
+    /**
+     * @param array<string, object> $services
+     */
+    private function locator(array $services): \Psr\Container\ContainerInterface
+    {
+        return new \Symfony\Component\DependencyInjection\ServiceLocator(array_map(
+            static fn (object $service): \Closure => static fn (): object => $service,
+            $services,
+        ));
     }
 
     private function subscriber(): QueueEventSubscriber
