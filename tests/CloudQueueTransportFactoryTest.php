@@ -87,7 +87,7 @@ class CloudQueueTransportFactoryTest extends TestCase
         return new CloudQueueTransportFactory(
             $config,
             new SqsClientFactory($config),
-            new AgentClient('/unused.sock'),
+            new AgentClient($config),
         );
     }
 }

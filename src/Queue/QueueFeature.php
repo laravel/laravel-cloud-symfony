@@ -104,8 +104,11 @@ final class QueueFeature implements CloudFeature, PrependsConfig
         $services->set(SqsClientFactory::class)
             ->args([service(ManagedQueueConfig::class)]);
 
+        // The agent socket now rides in the managed-queue config (with the
+        // LARAVEL_CLOUD_AGENT_SOCKET override folded in there as a fallback), so
+        // the client and the receive-path decision share one source of truth.
         $services->set(AgentClient::class)
-            ->args([$platform->agentSocket()]);
+            ->args([service(ManagedQueueConfig::class)]);
 
         $services->set(CloudQueueTransportFactory::class)
             ->args([

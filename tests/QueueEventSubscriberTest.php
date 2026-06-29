@@ -328,7 +328,7 @@ class QueueEventSubscriberTest extends TestCase
             'credentials' => ['key' => 'k', 'secret' => 's'],
         ]);
 
-        return new CloudQueueTransport($sqs, new AgentClient('/unused.sock'), $this->config(), new PhpSerializer(), false);
+        return new CloudQueueTransport($sqs, new AgentClient($this->config()), $this->config(), new PhpSerializer(), false);
     }
 
     /**

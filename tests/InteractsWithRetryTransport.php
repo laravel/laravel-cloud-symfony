@@ -107,7 +107,7 @@ trait InteractsWithRetryTransport
         ]);
 
         // useAgent: false → drive SQS directly so the test can inspect the calls.
-        return new CloudQueueTransport($sqs, new AgentClient('/unused.sock'), $config, new PhpSerializer(), false);
+        return new CloudQueueTransport($sqs, new AgentClient($config), $config, new PhpSerializer(), false);
     }
 
     private function lastSqsAction(): ?string

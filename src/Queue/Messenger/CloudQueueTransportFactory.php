@@ -23,8 +23,8 @@ use Symfony\Component\Messenger\Transport\TransportInterface;
  * ManagedQueueConfig), so the DSN itself carries no connection detail — it just
  * selects this transport.
  *
- * Whether to receive via the in-container agent or directly from SQS is detected
- * automatically from the presence of the agent socket, so the same DSN does the
+ * Whether to receive via the in-container agent or directly from SQS is decided
+ * by the agent's "enabled" flag in the injected config, so the same DSN does the
  * right thing on Laravel Cloud and in local development with no extra config.
  */
 final class CloudQueueTransportFactory implements TransportFactoryInterface
@@ -49,8 +49,8 @@ final class CloudQueueTransportFactory implements TransportFactoryInterface
             $this->agent,
             $this->config,
             $serializer,
-            // Receive via the agent when its socket is present (inside a Laravel
-            // Cloud container), otherwise straight from SQS (local dev).
+            // Receive via the agent when Laravel Cloud has enabled it for this
+            // container, otherwise straight from SQS (local dev).
             $this->config->agentAvailable(),
         );
     }

@@ -19,6 +19,10 @@ namespace Laravel\Cloud\Symfony\Queue;
  *       "queue": "default",
  *       "region": "us-east-2",
  *       "credentials": "ecs"
+ *     },
+ *     "agent": {
+ *       "enabled": true,
+ *       "socket": "/tmp/cloud-agent.sock"
  *     }
  *   }
  */
@@ -30,6 +34,7 @@ final class ManagedQueueConfig
         public readonly string $credentials,
         public readonly string $queue,
         public readonly string $agentSocket,
+        public readonly bool $agentEnabled = false,
         public readonly string $prefix = '',
         public readonly string $suffix = '',
     ) {
@@ -51,6 +56,22 @@ final class ManagedQueueConfig
 
         $connection = is_array($data['connection'] ?? null) ? $data['connection'] : [];
 
+        // Laravel Cloud injects an "agent" slice describing the in-container
+        // cloud-agent sidecar: whether it is serving this container ("enabled")
+        // and the runtime socket to reach it on ("socket"). We trust this flag
+        // to decide the receive path rather than probing the socket on disk —
+        // see {@see agentAvailable()}.
+        $agent = is_array($data['agent'] ?? null) ? $data['agent'] : [];
+
+        // The socket comes from the agent slice. When it's absent or null we
+        // fall back to the bundle's configured socket (the
+        // LARAVEL_CLOUD_AGENT_SOCKET override) and finally to the conventional
+        // default, so the agent always has a path to dial when enabled.
+        $agentSocketFromConfig = $agent['socket'] ?? null;
+        $resolvedSocket = is_string($agentSocketFromConfig) && $agentSocketFromConfig !== ''
+            ? $agentSocketFromConfig
+            : ($agentSocket !== null && $agentSocket !== '' ? $agentSocket : '/tmp/cloud-agent.sock');
+
         // The agent message reports the real queue URL it came from, but for
         // pushing we build it the same way Laravel's SqsQueue does — see
         // {@see buildQueueUrl} for the (FIFO-aware) suffixing rules.
@@ -63,7 +84,8 @@ final class ManagedQueueConfig
             region: isset($connection['region']) ? (string) $connection['region'] : null,
             credentials: (string) ($connection['credentials'] ?? 'default'),
             queue: $queue,
-            agentSocket: $agentSocket !== null && $agentSocket !== '' ? $agentSocket : '/tmp/cloud-agent.sock',
+            agentSocket: $resolvedSocket,
+            agentEnabled: (bool) ($agent['enabled'] ?? false),
             prefix: $prefix,
             suffix: $suffix,
         );
@@ -162,14 +184,18 @@ final class ManagedQueueConfig
     }
 
     /**
-     * Whether the in-container cloud-agent is reachable. The agent is a sidecar
-     * that only exists inside a Laravel Cloud container, so its absence (no
-     * socket on disk) is how we detect "running locally" and fall back to
-     * talking to SQS directly.
+     * Whether the in-container cloud-agent should be used for receiving.
+     *
+     * This is driven by the "enabled" flag in the injected agent config — not by
+     * probing the socket on disk. Laravel Cloud tells us authoritatively whether
+     * the agent sidecar is serving this container, which is more reliable than a
+     * file_exists() race against a socket that may appear or vanish. Outside
+     * Laravel Cloud the flag is absent (defaults false), so the transport
+     * receives straight from SQS.
      */
     public function agentAvailable(): bool
     {
-        return $this->agentSocket !== '' && @file_exists($this->agentSocket);
+        return $this->agentEnabled;
     }
 
     /**

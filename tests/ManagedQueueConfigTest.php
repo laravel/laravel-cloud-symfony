@@ -113,14 +113,60 @@ class ManagedQueueConfigTest extends TestCase
         $this->assertFalse($config->usesEcsCredentials());
     }
 
-    public function testAgentAvailabilityReflectsSocketPresence(): void
+    public function testAgentAvailabilityReflectsTheEnabledFlag(): void
     {
-        $socket = tempnam(sys_get_temp_dir(), 'agent-sock');
-        $present = ManagedQueueConfig::fromEnvironment(self::SAMPLE, $socket);
-        $this->assertTrue($present->agentAvailable());
-        unlink($socket);
+        // The agent is used because Laravel Cloud says so — not because a socket
+        // happens to exist on disk. A non-existent socket path is irrelevant.
+        $enabled = ManagedQueueConfig::fromEnvironment(
+            '{"agent":{"enabled":true,"socket":"/does/not/exist.sock"}}',
+            null,
+        );
+        $this->assertTrue($enabled->agentAvailable());
 
-        $absent = ManagedQueueConfig::fromEnvironment(self::SAMPLE, $socket);
-        $this->assertFalse($absent->agentAvailable());
+        $disabled = ManagedQueueConfig::fromEnvironment(
+            '{"agent":{"enabled":false,"socket":"/does/not/exist.sock"}}',
+            null,
+        );
+        $this->assertFalse($disabled->agentAvailable());
+    }
+
+    public function testAgentIsDisabledWhenNoAgentSliceIsPresent(): void
+    {
+        // Running locally with no managed-queue config: the flag defaults off so
+        // the transport receives straight from SQS.
+        $config = ManagedQueueConfig::fromEnvironment(self::SAMPLE, '/tmp/cloud-agent.sock');
+
+        $this->assertFalse($config->agentEnabled);
+        $this->assertFalse($config->agentAvailable());
+    }
+
+    public function testAgentSocketComesFromTheAgentSlice(): void
+    {
+        $config = ManagedQueueConfig::fromEnvironment(
+            '{"agent":{"enabled":true,"socket":"/run/cloud-agent.sock"}}',
+            null,
+        );
+
+        $this->assertSame('/run/cloud-agent.sock', $config->agentSocket);
+    }
+
+    public function testAgentSocketFallsBackToTheDefaultWhenMissingOrNull(): void
+    {
+        // Enabled, but no socket given in the slice and no override passed in:
+        // fall back to the conventional default path so the agent can be dialed.
+        $missing = ManagedQueueConfig::fromEnvironment('{"agent":{"enabled":true}}', null);
+        $this->assertSame('/tmp/cloud-agent.sock', $missing->agentSocket);
+
+        $null = ManagedQueueConfig::fromEnvironment('{"agent":{"enabled":true,"socket":null}}', null);
+        $this->assertSame('/tmp/cloud-agent.sock', $null->agentSocket);
+    }
+
+    public function testAgentSocketFallsBackToTheConfiguredOverrideBeforeTheDefault(): void
+    {
+        // With no socket in the slice, the bundle's LARAVEL_CLOUD_AGENT_SOCKET
+        // override (passed in as the second argument) wins over the hard default.
+        $config = ManagedQueueConfig::fromEnvironment('{"agent":{"enabled":true}}', '/custom/agent.sock');
+
+        $this->assertSame('/custom/agent.sock', $config->agentSocket);
     }
 }

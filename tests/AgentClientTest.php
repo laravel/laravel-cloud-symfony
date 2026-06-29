@@ -10,9 +10,10 @@ use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
-use Laravel\Cloud\Symfony\Queue\Agent\AgentUnreachableException;
+use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Symfony\Component\Messenger\Exception\TransportException;
 
 class AgentClientTest extends TestCase
 {
@@ -51,7 +52,7 @@ class AgentClientTest extends TestCase
             new ConnectException('Connection refused', new Request('GET', '/next')),
         ]);
 
-        $this->expectException(AgentUnreachableException::class);
+        $this->expectException(TransportException::class);
         $agent->next();
     }
 
@@ -59,7 +60,7 @@ class AgentClientTest extends TestCase
     {
         $agent = $this->agent([new Response(500)]);
 
-        $this->expectException(AgentUnreachableException::class);
+        $this->expectException(TransportException::class);
         $agent->next();
     }
 
@@ -67,7 +68,7 @@ class AgentClientTest extends TestCase
     {
         $agent = $this->agent([new Response(200, [], '"just a string"')]);
 
-        $this->expectException(AgentUnreachableException::class);
+        $this->expectException(TransportException::class);
         $agent->next();
     }
 
@@ -107,11 +108,11 @@ class AgentClientTest extends TestCase
         $this->assertCount(3, $this->sent);
     }
 
-    public function testReportTreatsServerErrorAsAgentUnreachable(): void
+    public function testReportTreatsServerErrorAsTransportException(): void
     {
         $agent = $this->agent([new Response(503)]);
 
-        $this->expectException(AgentUnreachableException::class);
+        $this->expectException(TransportException::class);
         $agent->report('m-1', 'rh-1', 'processed');
     }
 
@@ -138,6 +139,9 @@ class AgentClientTest extends TestCase
         $stack = HandlerStack::create($mock);
         $stack->push(Middleware::history($this->sent));
 
-        return new AgentClient('/unused.sock', new Client(['handler' => $stack]));
+        return new AgentClient(
+            ManagedQueueConfig::fromEnvironment(null, '/unused.sock'),
+            new Client(['handler' => $stack]),
+        );
     }
 }

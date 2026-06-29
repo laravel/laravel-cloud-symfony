@@ -40,10 +40,9 @@ framework:
             '*': cloud
 ```
 
-That's it, locally and on Cloud alike. On Cloud, jobs are pushed to SQS and
-received from the in-container agent; locally the transport falls back to
-talking to SQS directly. Throughput, duration and failures show up in the
-Laravel Cloud dashboard automatically.
+That's it, locally and on Cloud alike. On Cloud the injected config wires
+everything up for you, so it just works — no extra setup. Throughput, duration
+and failures show up in the Laravel Cloud dashboard automatically.
 
 > **Already running Messenger?** Cloud injects
 > `MESSENGER_TRANSPORT_DSN=laravel-cloud://managed-queue`, so an app using the

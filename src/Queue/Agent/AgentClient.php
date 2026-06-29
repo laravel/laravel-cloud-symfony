@@ -5,8 +5,10 @@ namespace Laravel\Cloud\Symfony\Queue\Agent;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\GuzzleException;
+use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
 use Psr\Http\Client\ClientInterface;
 use RuntimeException;
+use Symfony\Component\Messenger\Exception\TransportException;
 
 /**
  * Talks to the in-container cloud-agent over its unix runtime socket.
@@ -20,7 +22,7 @@ use RuntimeException;
 final class AgentClient
 {
     public function __construct(
-        private readonly string $socketPath,
+        private readonly ManagedQueueConfig $config,
         private ?ClientInterface $http = null,
     ) {
     }
@@ -31,12 +33,13 @@ final class AgentClient
      * Returns the decoded payload (messageId, receiptHandle, body, attributes,
      * queueUrl), or null when the agent has nothing (HTTP 204). Anything else —
      * an unreachable socket, an unexpected status, or a non-array body — means
-     * the agent cannot serve work and raises AgentUnreachableException so the
-     * consumer exits and the pod restarts.
+     * the agent cannot serve work and raises a Messenger TransportException. The
+     * Worker doesn't catch this around get(), so the consumer exits and the pod
+     * restarts (a wedged agent only recovers on restart).
      *
      * @return array<string, mixed>|null
      *
-     * @throws AgentUnreachableException
+     * @throws TransportException
      */
     public function next(): ?array
     {
@@ -48,9 +51,9 @@ final class AgentClient
                 'http_errors' => false,
             ]);
         } catch (ConnectException $e) {
-            throw new AgentUnreachableException('The Laravel Cloud agent runtime socket is unreachable.', previous: $e);
+            throw new TransportException('The Laravel Cloud agent runtime socket is unreachable.', previous: $e);
         } catch (GuzzleException $e) {
-            throw new AgentUnreachableException('The Laravel Cloud agent request failed.', previous: $e);
+            throw new TransportException('The Laravel Cloud agent request failed.', previous: $e);
         }
 
         $status = $response->getStatusCode();
@@ -60,13 +63,13 @@ final class AgentClient
         }
 
         if ($status !== 200) {
-            throw new AgentUnreachableException("The Laravel Cloud agent returned HTTP {$status} from GET /next.");
+            throw new TransportException("The Laravel Cloud agent returned HTTP {$status} from GET /next.");
         }
 
         $data = json_decode((string) $response->getBody(), true);
 
         if (! is_array($data)) {
-            throw new AgentUnreachableException('The Laravel Cloud agent returned a non-array body from GET /next.');
+            throw new TransportException('The Laravel Cloud agent returned a non-array body from GET /next.');
         }
 
         return $data;
@@ -79,14 +82,14 @@ final class AgentClient
      * redelivers it.
      *
      * Transient socket hiccups are retried. An unreachable socket or a server
-     * error means the agent itself is wedged and raises
-     * AgentUnreachableException (exit + restart the pod). A client-error
-     * rejection — the agent is the authority on a valid outcome for this one
-     * message — surfaces as a RuntimeException so the consumer reports it and
-     * moves on. The job is never lost: a crashed agent stops heartbeating, so
-     * SQS redelivers once the visibility timeout lapses.
+     * error means the agent itself is wedged and raises a Messenger
+     * TransportException (exit + restart the pod). A client-error rejection —
+     * the agent is the authority on a valid outcome for this one message —
+     * surfaces as a RuntimeException so the consumer reports it and moves on.
+     * The job is never lost: a crashed agent stops heartbeating, so SQS
+     * redelivers once the visibility timeout lapses.
      *
-     * @throws AgentUnreachableException
+     * @throws TransportException
      */
     public function report(string $messageId, ?string $receiptHandle, string $status, ?int $delay = null): void
     {
@@ -114,15 +117,15 @@ final class AgentClient
                     continue;
                 }
 
-                throw new AgentUnreachableException('The Laravel Cloud agent runtime socket is unreachable.', previous: $e);
+                throw new TransportException('The Laravel Cloud agent runtime socket is unreachable.', previous: $e);
             } catch (GuzzleException $e) {
-                throw new AgentUnreachableException('The Laravel Cloud agent request failed.', previous: $e);
+                throw new TransportException('The Laravel Cloud agent request failed.', previous: $e);
             }
 
             $code = $response->getStatusCode();
 
             if ($code >= 500) {
-                throw new AgentUnreachableException("The Laravel Cloud agent returned HTTP {$code} from POST /result.");
+                throw new TransportException("The Laravel Cloud agent returned HTTP {$code} from POST /result.");
             }
 
             if ($code >= 400) {
@@ -138,7 +141,9 @@ final class AgentClient
         return $this->http ??= new Client([
             'base_uri' => 'http://localhost',
             'curl' => [
-                CURLOPT_UNIX_SOCKET_PATH => $this->socketPath,
+                // Dial the socket the injected agent config points at — the same
+                // path the transport's agent-availability decision is based on.
+                CURLOPT_UNIX_SOCKET_PATH => $this->config->agentSocket,
             ],
         ]);
     }

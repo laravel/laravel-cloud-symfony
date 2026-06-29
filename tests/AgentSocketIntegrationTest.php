@@ -3,6 +3,7 @@
 namespace Laravel\Cloud\Symfony\Tests;
 
 use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
+use Laravel\Cloud\Symfony\Queue\ManagedQueueConfig;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Process\Process;
 
@@ -50,7 +51,7 @@ class AgentSocketIntegrationTest extends TestCase
 
     public function testNextAndReportOverARealUnixSocket(): void
     {
-        $agent = new AgentClient($this->socket);
+        $agent = new AgentClient(ManagedQueueConfig::fromEnvironment(null, $this->socket));
 
         $data = $agent->next();
 

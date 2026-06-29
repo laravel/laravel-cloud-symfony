@@ -546,7 +546,7 @@ class CloudQueueTransportTest extends TestCase
 
         $stack = HandlerStack::create($this->agentMock);
         $stack->push(Middleware::history($this->agentRequests));
-        $agent = new AgentClient('/unused.sock', new Client(['handler' => $stack]));
+        $agent = new AgentClient($config, new Client(['handler' => $stack]));
 
         return new CloudQueueTransport($sqs, $agent, $config, $this->serializer, $useAgent);
     }
