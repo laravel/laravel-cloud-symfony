@@ -40,9 +40,10 @@ framework:
             '*': cloud
 ```
 
-That's it, locally and on Cloud alike. On Cloud the injected config wires
-everything up for you, so it just works — no extra setup. Throughput, duration
-and failures show up in the Laravel Cloud dashboard automatically.
+On Cloud that's all you need: the injected config wires everything up, so it
+just works — no extra setup — and throughput, duration and failures show up in
+the Laravel Cloud dashboard automatically. To run it locally, see
+[Local development](#local-development).
 
 > **Already running Messenger?** Cloud injects
 > `MESSENGER_TRANSPORT_DSN=laravel-cloud://managed-queue`, so an app using the
@@ -69,10 +70,10 @@ $bus->dispatch(new ProcessReport($report), [new CloudQueueStamp('critical')]);
 Without a stamp, a message goes to the environment's default queue. To route by
 message type, add a middleware that attaches the stamp based on the class.
 
-On Cloud each managed queue gets its own isolated workers, run for you with the
-right queue name. Attribution flows to the dashboard end to end, so a
-`CloudQueueStamp('critical')` dispatch is recorded against `critical` on both the
-dispatch and processing side.
+On Cloud each managed queue gets its own isolated workers, run for you. A
+`CloudQueueStamp('critical')` dispatch is handled by the `critical` workers and
+reported against `critical` in the dashboard, so per-queue metrics line up with
+where you sent the work.
 
 ### FIFO queues
 
