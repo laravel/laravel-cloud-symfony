@@ -22,7 +22,7 @@ return [
 ```
 
 > The package is not yet on Packagist and ships no Symfony Flex recipe, so the
-> bundle is registered manually for now. A recipe could automate this later.
+> bundle has to be registered manually for now.
 
 ## Managed queues
 
