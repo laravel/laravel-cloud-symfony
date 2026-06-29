@@ -21,8 +21,8 @@ return [
 ];
 ```
 
-> The package is not yet on Packagist and ships no Symfony Flex recipe, so the
-> bundle has to be registered manually for now.
+> The package ships no Symfony Flex recipe, so the bundle has to be registered
+> manually for now.
 
 ## Managed queues
 
