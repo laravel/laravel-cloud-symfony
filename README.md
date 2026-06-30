@@ -214,3 +214,7 @@ To turn the feature off entirely, set `laravel_cloud.queue.enabled: false`.
 composer install
 vendor/bin/phpunit
 ```
+
+## License
+
+`laravel/symfony-on-cloud` is open-sourced software licensed under the [MIT license](LICENSE.md).
