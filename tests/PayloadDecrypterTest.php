@@ -19,6 +19,8 @@ class PayloadDecrypterTest extends TestCase
      */
     public static function keys(): iterable
     {
+        yield 'a Cloud-generated APP_SECRET, hex-decoded' => [bin2hex(str_repeat('c', 32)), str_repeat('c', 32), 'aes-256-cbc'];
+        yield 'a Cloud-generated APP_SECRET with AES-256-GCM' => [bin2hex(str_repeat('c', 32)), str_repeat('c', 32), 'aes-256-gcm'];
         yield 'a Symfony APP_SECRET with AES-256-CBC' => [self::SECRET, self::SECRET, 'aes-256-cbc'];
         yield 'a Symfony APP_SECRET with AES-256-GCM' => [self::SECRET, self::SECRET, 'aes-256-gcm'];
         yield 'a Laravel-style base64: key' => ['base64:'.base64_encode(str_repeat('k', 32)), str_repeat('k', 32), 'aes-256-cbc'];
@@ -37,6 +39,7 @@ class PayloadDecrypterTest extends TestCase
 
     public function testItAsksForTheCbcCipherTheKeyFits(): void
     {
+        $this->assertSame('AES-256-CBC', (new PayloadDecrypter(bin2hex(random_bytes(32))))->cipherHeader());
         $this->assertSame('AES-256-CBC', (new PayloadDecrypter(self::SECRET))->cipherHeader());
         $this->assertSame('AES-128-CBC', (new PayloadDecrypter('abcdefghijklmnop'))->cipherHeader());
     }
@@ -80,8 +83,9 @@ class PayloadDecrypterTest extends TestCase
     public function testItRejectsASecretOfTheWrongLength(): void
     {
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('16- or 32-byte key');
+        $this->expectExceptionMessage('64-character hex string or a 16- or 32-byte key');
 
-        new PayloadDecrypter('too-short');
+        // 64 characters, but not hex: not a Cloud secret, and too long for a raw key.
+        new PayloadDecrypter(str_repeat('z', 64));
     }
 }

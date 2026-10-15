@@ -186,9 +186,10 @@ hidden `bin/console cloud:queue:retry <signed-url>` (`Retry\RetryCommand`):
    403, an expired/tampered URL.
 2. **Decrypt** (`Retry\PayloadDecrypter`) — the response is encrypted with
    Laravel's `Encrypter`, keyed by **`APP_SECRET`** (Laravel's `APP_KEY`
-   equivalent, injected by Cloud). The key is read as Laravel reads `APP_KEY`:
-   `base64:` → decoded bytes, else as-is — so a stock 32-hex-char Symfony secret
-   is an AES-256 key. CBC (HMAC-authenticated) and GCM are both accepted.
+   equivalent, injected by Cloud). Cloud generates it as
+   `bin2hex(random_bytes(32))`, so a 64-char hex secret is hex-decoded to its 32
+   bytes (AES-256); otherwise it's read as Laravel reads `APP_KEY` (`base64:` →
+   decoded bytes, else as-is). CBC (HMAC-authenticated) and GCM are accepted.
 3. **Re-dispatch through the bus.** The payload is decoded with the transport's
    own serializer (`CloudQueueTransport::decodePayload()`), stale stamps from the
    original dispatch are stripped (delay, retry count, failure-transport history,

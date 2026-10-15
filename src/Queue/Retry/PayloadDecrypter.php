@@ -7,8 +7,8 @@ use RuntimeException;
 /**
  * Decrypt-only port of Laravel's Encrypter::decryptString, keyed by APP_SECRET.
  *
- * The key is parsed like Laravel's APP_KEY ("base64:" prefix or raw), so a stock
- * 32-hex-char Symfony secret is used directly as an AES-256 key.
+ * A 64-char hex secret (as Cloud generates) is hex-decoded to its 32 bytes;
+ * otherwise the key is parsed like Laravel's APP_KEY ("base64:" prefix or raw).
  */
 final class PayloadDecrypter
 {
@@ -27,12 +27,15 @@ final class PayloadDecrypter
             throw new RuntimeException('APP_SECRET is not set; it is needed to decrypt failed jobs retried from the Laravel Cloud dashboard.');
         }
 
-        $this->key = str_starts_with($secret, 'base64:')
-            ? (string) base64_decode(substr($secret, strlen('base64:')), true)
-            : $secret;
+        $this->key = match (true) {
+            str_starts_with($secret, 'base64:') => (string) base64_decode(substr($secret, strlen('base64:')), true),
+            // Cloud generates APP_SECRET as bin2hex(random_bytes(32)).
+            strlen($secret) === 64 && ctype_xdigit($secret) => (string) hex2bin($secret),
+            default => $secret,
+        };
 
         if ($this->cipher() === null) {
-            throw new RuntimeException(sprintf('APP_SECRET must be a 16- or 32-byte key to decrypt Laravel Cloud payloads; it is %d bytes.', strlen($this->key)));
+            throw new RuntimeException(sprintf('APP_SECRET must be a 64-character hex string or a 16- or 32-byte key to decrypt Laravel Cloud payloads; it is %d bytes.', strlen($this->key)));
         }
     }
 
