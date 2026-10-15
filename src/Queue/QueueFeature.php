@@ -7,6 +7,8 @@ use Laravel\Cloud\Symfony\PlatformContext;
 use Laravel\Cloud\Symfony\PrependsConfig;
 use Laravel\Cloud\Symfony\Queue\Agent\AgentClient;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransportFactory;
+use Laravel\Cloud\Symfony\Queue\Retry\FailedJobFetcher;
+use Laravel\Cloud\Symfony\Queue\Retry\RetryCommand;
 use Laravel\Cloud\Symfony\Queue\Sqs\SqsClientFactory;
 use Symfony\Component\Config\Definition\Builder\NodeBuilder;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -126,5 +128,18 @@ final class QueueFeature implements CloudFeature, PrependsConfig
                 service(ManagedQueueConfig::class),
             ])
             ->tag('kernel.event_subscriber');
+
+        // Dashboard retries; the routable bus honours each message's original bus.
+        $services->set(FailedJobFetcher::class)
+            ->args([env('default::APP_SECRET')]);
+
+        $services->set(RetryCommand::class)
+            ->args([
+                service(FailedJobFetcher::class),
+                service('messenger.receiver_locator'),
+                service('messenger.routable_message_bus'),
+                $platform->events(),
+            ])
+            ->tag('console.command');
     }
 }

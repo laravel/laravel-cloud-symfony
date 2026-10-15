@@ -6,6 +6,7 @@ use Laravel\Cloud\Symfony\LaravelCloudBundle;
 use Laravel\Cloud\Symfony\Observability\Events;
 use Laravel\Cloud\Symfony\Queue\Messenger\CloudQueueTransportFactory;
 use Laravel\Cloud\Symfony\Queue\QueueEventSubscriber;
+use Laravel\Cloud\Symfony\Queue\Retry\RetryCommand;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Extension\PrependExtensionInterface;
@@ -29,6 +30,8 @@ class LaravelCloudBundleTest extends TestCase
         $this->assertTrue($container->hasDefinition(CloudQueueTransportFactory::class));
         $this->assertTrue($container->getDefinition(CloudQueueTransportFactory::class)->hasTag('messenger.transport_factory'));
         $this->assertTrue($container->getDefinition(QueueEventSubscriber::class)->hasTag('kernel.event_subscriber'));
+
+        $this->assertTrue($container->getDefinition(RetryCommand::class)->hasTag('console.command'));
     }
 
     public function testDisablingTheQueueFeatureLeavesItsServicesOutButKeepsThePlatform(): void
@@ -41,6 +44,7 @@ class LaravelCloudBundleTest extends TestCase
         // The disabled feature contributes nothing to the container.
         $this->assertFalse($container->hasDefinition(CloudQueueTransportFactory::class));
         $this->assertFalse($container->hasDefinition(QueueEventSubscriber::class));
+        $this->assertFalse($container->hasDefinition(RetryCommand::class));
     }
 
     public function testItPrependsAReadyMadeCloudTransportWhenTheQueueFeatureIsEnabled(): void
