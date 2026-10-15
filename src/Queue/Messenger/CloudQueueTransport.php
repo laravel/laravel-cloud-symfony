@@ -390,6 +390,16 @@ final class CloudQueueTransport implements TransportInterface, QueueReceiverInte
             ->with(new RedeliveryStamp(max(0, $receiveCount - 1)));
     }
 
+    /**
+     * Decode a stored SQS message body, e.g. a failed job retried from the dashboard.
+     *
+     * @throws MessageDecodingFailedException
+     */
+    public function decodePayload(string $payload): Envelope
+    {
+        return $this->serializer->decode($this->unwrap($payload));
+    }
+
     private function encode(Envelope $envelope): string
     {
         $encoded = $this->serializer->encode($envelope);

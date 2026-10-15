@@ -152,19 +152,57 @@ the transport regardless of transport name), a user-defined transport pointed at
 `_cloud_event` records via `Events`:
 
 - `queued` (on send) · `started` (received) · `processed` (handled) ·
-  `released` (failed but will retry) · `failed` (terminal) · `failed_job`
-  (terminal: full payload + exception + attempt count).
+  `released` (failed but will retry) · `failed_job` then `failed` (terminal).
 - It recognises *our* messages by the `CloudQueueReceivedStamp`, not the
   transport name.
 - It reads **`willRetry()`** to choose `released` vs `failed` — and runs at
   **priority -100**, after Symfony's retry listener (priority 100) has set that
   flag. Don't reorder this.
+- **`failed_job` is Cloud's contract** and must match Laravel's
+  `Cloud\FailedJobProvider::log`: the same fields (`id` as a UUIDv7, `queue`,
+  `started_at`, `attempts`, `payload`, `exception_preview`, `job_name`,
+  `exception`), emitted **before** the `failed` queue event.
+- The `payload` is the message body exactly as it sat on SQS — **whole and
+  untrimmed**. A dashboard retry decodes it to re-dispatch the message (see
+  below), so trimming it (or dropping its `headers`) makes the job unretryable.
+  If a large event ever runs into the log pipeline's line limits (containerd
+  splits lines over 16 KiB), fix it there or deliberately here — not by quietly
+  trimming the payload.
 - `failed_job` attempts come from `ApproximateReceiveCount` (mirroring Laravel's
   `SqsJob::attempts()`), not the synthesized `RedeliveryStamp`.
-- There is a **temporary trimming workaround** (`MAX_EXCEPTION_BYTES` /
-  `MAX_PAYLOAD_BODY_BYTES`) keeping `failed_job` under a 16 KiB CRI log-line limit
-  in the platform's log collector. It's documented in-file as removable once the
-  collector reassembles partial lines — don't treat it as permanent.
+- `exception_preview` names the handler's own exception, unwrapped from
+  Messenger's `HandlerFailedException`; `exception` keeps the full chain.
+
+### Dashboard retries
+
+Retrying a failed job from the Cloud dashboard runs **in the app**, as it does for
+Laravel (where Cloud runs `php artisan queue:retry <signed-url>`). Cloud runs the
+hidden `bin/console cloud:queue:retry <signed-url>` (`Retry\RetryCommand`):
+
+1. **Fetch** (`Retry\FailedJobFetcher`) — a port of the URL half of Laravel's
+   `FailedJobProvider::find()`: sends `Cloud-Payload-Version: 1` and
+   `Cloud-Encryption-Cipher`, follows `links.next` page by page (an unversioned
+   response is one job), and retries 10× with exponential backoff — except on a
+   403, an expired/tampered URL.
+2. **Decrypt** (`Retry\PayloadDecrypter`) — the response is encrypted with
+   Laravel's `Encrypter`, keyed by **`APP_SECRET`** (Laravel's `APP_KEY`
+   equivalent, injected by Cloud). Cloud generates it as
+   `bin2hex(random_bytes(32))`, so a 64-char hex secret is hex-decoded to its 32
+   bytes (AES-256); otherwise it's read as Laravel reads `APP_KEY` (`base64:` →
+   decoded bytes, else as-is). CBC (HMAC-authenticated) and GCM are accepted.
+3. **Re-dispatch through the bus.** The payload is decoded with the transport's
+   own serializer (`CloudQueueTransport::decodePayload()`), stale stamps from the
+   original dispatch are stripped (delay, retry count, failure-transport history,
+   routing), and it is dispatched on `messenger.routable_message_bus` pinned by
+   `TransportNamesStamp` to the managed-queue transport and by `CloudQueueStamp`
+   to the queue it failed on. Going through the bus — not straight to SQS — is
+   the point: middleware, send events and the `queued` metric all fire.
+4. **Forget** — a `failed_job` event with `retried_at` marks it retried in the
+   dashboard (Laravel's `FailedJobProvider::forget()`). A job that fails to
+   decode or dispatch is reported and *not* forgotten; the rest still retry.
+
+`CloudFifoStamp` is non-sendable, so a retried FIFO job gets the transport's
+FIFO defaults (group = queue name, fresh dedupe ID) rather than its original IDs.
 
 ### Stamps (all in `src/Queue/Messenger/`)
 
@@ -202,7 +240,13 @@ Tests are unit + integration with **real fakes, not mocks of our own code**:
 - **Agent**: Guzzle `MockHandler`, plus a real unix-socket agent stub
   (`tests/Fixtures/agent-server.php`, driven by `AgentSocketIntegrationTest`).
 - **Observability**: a real unix socket server captures the emitted JSON lines
-  (`QueueEventSubscriberTest`).
+  (`CapturesCloudEvents`, used by `QueueEventSubscriberTest` and
+  `RetryCommandTest`). The emit runs in a forked child while the test reads, as a
+  full `failed_job` outgrows the socket's few-KiB buffer.
+- **Dashboard retries**: `RetryCommandTest` serves an encrypted failed job (via
+  `EncryptsLikeLaravel`, Laravel's `encryptString` format) and re-dispatches it
+  through a real `MessageBus` onto the transport, asserting the SQS send and the
+  emitted `queued` + `retried_at` events.
 - **Retry**: `CloudRetryIntegrationTest` and the end-to-end test in
   `QueueEventSubscriberTest` drive the **real** Symfony `SendFailedMessageForRetryListener`
   + stock `MultiplierRetryStrategy` against the transport — proving the native

@@ -18,6 +18,7 @@ use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageHandledEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageReceivedEvent;
 use Symfony\Component\Messenger\EventListener\SendFailedMessageForRetryListener;
+use Symfony\Component\Messenger\Exception\HandlerFailedException;
 use Symfony\Component\Messenger\Retry\MultiplierRetryStrategy;
 use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Transport\Sender\SenderInterface;
@@ -31,31 +32,16 @@ class QueueEventSubscriberTest extends TestCase
 {
     private const QUEUE_URL = 'https://sqs.us-east-2.amazonaws.com/036991040854/default-env-x';
 
-    private string $socketPath = '';
-
-    /** @var resource|null */
-    private $server = null;
+    use CapturesCloudEvents;
 
     protected function setUp(): void
     {
-        $this->socketPath = sys_get_temp_dir().'/laravel-cloud-events-'.bin2hex(random_bytes(4)).'.sock';
-
-        $server = @stream_socket_server('unix://'.$this->socketPath, $errno, $errstr);
-
-        if ($server === false) {
-            $this->markTestSkipped("Unable to bind a unix socket: {$errstr} ({$errno})");
-        }
-
-        $this->server = $server;
+        $this->openEventSocket();
     }
 
     protected function tearDown(): void
     {
-        if (is_resource($this->server)) {
-            fclose($this->server);
-        }
-
-        @unlink($this->socketPath);
+        $this->closeEventSocket();
     }
 
     public function testItEmitsAQueuedEventWhenSendingToTheManagedTransport(): void
@@ -168,7 +154,7 @@ class QueueEventSubscriberTest extends TestCase
         $this->assertGreaterThanOrEqual(0, $lines[1]['duration_ms']);
     }
 
-    public function testATerminalFailureEmitsFailedAndAFailedJob(): void
+    public function testATerminalFailureEmitsAFailedJobThenFailed(): void
     {
         $subscriber = $this->subscriber();
 
@@ -192,16 +178,45 @@ class QueueEventSubscriberTest extends TestCase
         $this->assertCount(3, $lines);
         $this->assertSame('started', $lines[0]['type']);
 
-        $this->assertSame('queue', $lines[1]['_cloud_event']);
-        $this->assertSame('failed', $lines[1]['type']);
+        $this->assertSame('failed_job', $lines[1]['_cloud_event']);
+        $this->assertSame('default', $lines[1]['queue']);
+        $this->assertSame(3, $lines[1]['attempts']);
+        $this->assertStringContainsString('boom', $lines[1]['exception']);
+        $this->assertNotEmpty($lines[1]['id']);
+        $this->assertNotEmpty($lines[1]['started_at']);
 
-        $this->assertSame('failed_job', $lines[2]['_cloud_event']);
-        $this->assertSame('default', $lines[2]['queue']);
-        $this->assertSame(3, $lines[2]['attempts']);
-        $this->assertSame('raw-body', $lines[2]['payload']);
-        $this->assertStringContainsString('boom', $lines[2]['exception']);
-        $this->assertNotEmpty($lines[2]['id']);
-        $this->assertNotEmpty($lines[2]['started_at']);
+        $this->assertSame('queue', $lines[2]['_cloud_event']);
+        $this->assertSame('failed', $lines[2]['type']);
+    }
+
+    public function testTheFailedJobCarriesTheWholePayloadAndLaravelsSummaryFields(): void
+    {
+        $subscriber = $this->subscriber();
+
+        // Larger than the old trim limit; must arrive byte-for-byte.
+        $payload = json_encode([
+            'uuid' => 'a-uuid',
+            'displayName' => DummyMessage::class,
+            'body' => base64_encode(str_repeat('x', 40_000)),
+            'headers' => ['type' => DummyMessage::class],
+        ]);
+
+        $envelope = (new Envelope(new DummyMessage('work')))
+            ->with(new CloudQueueReceivedStamp('m-1', 'rh-1', self::QUEUE_URL, fromAgent: true, body: $payload));
+
+        $cause = new \LogicException('the real cause');
+        $error = new HandlerFailedException($envelope, ['App\\Handler::__invoke' => $cause]);
+
+        $lines = $this->capture(fn () => $subscriber->onFailed(new WorkerMessageFailedEvent($envelope, 'cloud', $error)));
+
+        $this->assertSame('failed_job', $lines[0]['_cloud_event']);
+        $this->assertSame($payload, $lines[0]['payload']);
+        $this->assertSame(DummyMessage::class, $lines[0]['job_name']);
+        $this->assertSame(
+            'LogicException: the real cause in '.$cause->getFile().':'.$cause->getLine(),
+            $lines[0]['exception_preview'],
+        );
+        $this->assertStringContainsString(HandlerFailedException::class, $lines[0]['exception']);
     }
 
     public function testARetryableFailureEmitsReleasedAndNoFailedJob(): void
@@ -279,10 +294,10 @@ class QueueEventSubscriberTest extends TestCase
 
         // 4th delivery → strategy is exhausted → "failed" + a recorded failed_job.
         $terminal = $dispatch(4);
-        $this->assertSame('failed', $terminal[0]['type']);
-        $this->assertSame('failed_job', $terminal[1]['_cloud_event']);
-        $this->assertSame(4, $terminal[1]['attempts']);
-        $this->assertStringContainsString('boom', $terminal[1]['exception']);
+        $this->assertSame('failed_job', $terminal[0]['_cloud_event']);
+        $this->assertSame(4, $terminal[0]['attempts']);
+        $this->assertStringContainsString('boom', $terminal[0]['exception']);
+        $this->assertSame('failed', $terminal[1]['type']);
     }
 
     /**
@@ -298,7 +313,7 @@ class QueueEventSubscriberTest extends TestCase
 
     private function subscriber(): QueueEventSubscriber
     {
-        return new QueueEventSubscriber(new Events('unix://'.$this->socketPath), $this->config());
+        return new QueueEventSubscriber(new Events($this->eventSocketAddress()), $this->config());
     }
 
     private function managedEnvelope(int $receiveCount = 1): Envelope
@@ -329,51 +344,5 @@ class QueueEventSubscriberTest extends TestCase
         ]);
 
         return new CloudQueueTransport($sqs, new AgentClient($this->config()), $this->config(), new PhpSerializer(), false);
-    }
-
-    /**
-     * Run the emitting closure and return the decoded JSON lines the socket
-     * server received.
-     *
-     * @return list<array<string, mixed>>
-     */
-    private function capture(callable $emit): array
-    {
-        $emit();
-
-        $client = @stream_socket_accept($this->server, 2);
-
-        if ($client === false) {
-            return [];
-        }
-
-        stream_set_blocking($client, false);
-
-        $buffer = '';
-        $deadline = microtime(true) + 1;
-
-        while (microtime(true) < $deadline) {
-            $chunk = fread($client, 8192);
-
-            if ($chunk !== false && $chunk !== '') {
-                $buffer .= $chunk;
-                // Keep reading briefly in case more lines are still in flight.
-                $deadline = microtime(true) + 0.1;
-            } else {
-                usleep(5000);
-            }
-        }
-
-        fclose($client);
-
-        $lines = [];
-
-        foreach (explode("\n", trim($buffer)) as $line) {
-            if ($line !== '') {
-                $lines[] = json_decode($line, true);
-            }
-        }
-
-        return $lines;
     }
 }

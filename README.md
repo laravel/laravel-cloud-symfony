@@ -192,6 +192,12 @@ transport. Omit the block entirely to use Messenger's defaults: 3 retries.)
 A job that exhausts its retries (or throws an unrecoverable exception) is deleted
 and recorded as a failed job, surfacing in the Laravel Cloud dashboard.
 
+Failed jobs can be **retried from the dashboard**. The retry runs inside your app:
+the job is dispatched through your message bus again, onto the queue it failed on,
+so your middleware and Messenger's send events run as they would for any
+dispatch. Laravel Cloud's payload is encrypted with your app's `APP_SECRET`, so
+keep the `APP_SECRET` that Laravel Cloud sets for the environment.
+
 ### Local development
 
 The `cloud` transport is just a default, so an app-defined transport of the same
