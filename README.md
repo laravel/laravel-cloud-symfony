@@ -1,4 +1,4 @@
-# laravel/symfony-on-cloud
+# laravel/laravel-cloud-symfony
 
 Bring [Laravel Cloud](https://laravel.com/cloud) features to a [Symfony](https://symfony.com)
 application.
@@ -9,7 +9,7 @@ capabilities will follow under the same `laravel_cloud` config key.
 ## Installation
 
 ```bash
-composer require laravel/symfony-on-cloud
+composer require laravel/laravel-cloud-symfony
 ```
 
 Then register the bundle in `config/bundles.php`:
@@ -223,4 +223,4 @@ vendor/bin/phpunit
 
 ## License
 
-`laravel/symfony-on-cloud` is open-sourced software licensed under the [MIT license](LICENSE.md).
+`laravel/laravel-cloud-symfony` is open-sourced software licensed under the [MIT license](LICENSE.md).
