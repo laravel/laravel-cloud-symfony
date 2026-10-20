@@ -1,5 +1,5 @@
 {
-    "name": "laravel/symfony-on-cloud",
+    "name": "laravel/laravel-cloud-symfony",
     "description": "Bring Laravel Cloud features to Symfony — a feature-based bundle whose first capability is Managed Queues on top of Symfony Messenger.",
     "type": "symfony-bundle",
     "license": "MIT",

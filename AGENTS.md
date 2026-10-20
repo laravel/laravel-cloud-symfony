@@ -6,7 +6,7 @@ conventions to keep when changing it.
 
 ## What this package is
 
-`laravel/symfony-on-cloud` is a **Symfony bundle that brings Laravel Cloud
+`laravel/laravel-cloud-symfony` is a **Symfony bundle that brings Laravel Cloud
 features to a Symfony app**. It is deliberately *feature-based*: the bundle itself
 is a thin host that owns a few shared platform primitives and delegates each
 capability to a self-contained "feature". Everything lives under a single
